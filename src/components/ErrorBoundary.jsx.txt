@@ -1,0 +1,211 @@
+import React from 'react';
+
+/**
+ * ErrorBoundary - Komponent for å fange og håndtere ukjente feil i React-applikasjonen
+ * 
+ * Denne komponenten fanger feil som oppstår i barnekomponenter, logger dem,
+ * og viser en brukervennlig feilmelding i stedet for at hele applikasjonen krasjer.
+ */
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = {
+      hasError: false,
+      error: null,
+      errorInfo: null,
+      errorId: null
+    };
+  }
+
+  static getDerivedStateFromError(error) {
+    // Oppdater state så neste render vil vise reservegrensesnitt
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    // Logger feilen til en ekstern feilsporingstjeneste
+    this.logError(error, errorInfo);
+    
+    // Generer en unik ID for feilen som kan brukes for feilsøking
+    const errorId = this.generateErrorId();
+    
+    this.setState({
+      errorInfo,
+      errorId
+    });
+  }
+  
+  /**
+   * Logger feilen til konsoll og potensielt til en ekstern tjeneste
+   */
+  logError(error, errorInfo) {
+    // I produksjon, fjernes console.error og sendes til en feilsporingstjeneste
+    if (process.env.NODE_ENV === 'development') {
+      console.error('Feilfanget i ErrorBoundary:', error);
+      console.error('Komponentstacktrace:', errorInfo.componentStack);
+    }
+    
+    // I produksjon, send feil til en ekstern tjeneste
+    if (process.env.NODE_ENV === 'production') {
+      // Her ville vi integrere med en tjeneste som Sentry, LogRocket, etc.
+      // For eksempel:
+      /*
+      if (window.Sentry) {
+        window.Sentry.captureException(error, {
+          extra: {
+            componentStack: errorInfo.componentStack
+          }
+        });
+      }
+      */
+      
+      // Implementer din egen feilloggingslogikk for produksjon her
+      // sendErrorToAnalytics(error, errorInfo);
+    }
+  }
+  
+  /**
+   * Genererer en unik ID for denne feilen
+   */
+  generateErrorId() {
+    return 'ERR-' + Math.random().toString(36).substr(2, 9);
+  }
+  
+  /**
+   * Håndterer prøv på nytt fra brukeren
+   */
+  handleRetry = () => {
+    this.setState({
+      hasError: false,
+      error: null,
+      errorInfo: null,
+      errorId: null
+    });
+  }
+  
+  /**
+   * Håndterer tilbake-handling
+   */
+  handleGoBack = () => {
+    window.history.back();
+  }
+  
+  /**
+   * Håndterer reset/omstart av applikasjonen
+   */
+  handleReset = () => {
+    window.location.href = '/';
+  }
+
+  render() {
+    const { fallback, children } = this.props;
+    const { hasError, error, errorInfo, errorId } = this.state;
+    
+    // Bruk egendefinert fallback hvis tilgjengelig
+    if (hasError && fallback) {
+      return typeof fallback === 'function'
+        ? fallback({ error, errorInfo, errorId, reset: this.handleRetry })
+        : fallback;
+    }
+
+    // Standard feilvisning hvis ingen fallback er gitt
+    if (hasError) {
+      return (
+        <div className="error-boundary p-6 rounded-lg shadow-lg bg-white max-w-xl mx-auto mt-10 text-center">
+          <div className="mb-6">
+            <div className="w-20 h-20 rounded-full bg-red-100 mx-auto flex items-center justify-center mb-4">
+              <svg className="w-10 h-10 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+              </svg>
+            </div>
+            <h2 className="text-2xl font-bold text-gray-800 mb-2">Beklager, noe gikk galt</h2>
+            <p className="text-gray-600 mb-1">
+              Vi opplever et teknisk problem. Dette er ikke din feil.
+            </p>
+            {errorId && (
+              <p className="text-sm text-gray-500 mb-4">
+                Feilreferanse: {errorId}
+              </p>
+            )}
+          </div>
+          
+          <div className="space-y-2">
+            <button
+              onClick={this.handleRetry}
+              className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+            >
+              Prøv igjen
+            </button>
+            
+            <button
+              onClick={this.handleGoBack}
+              className="w-full px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition"
+            >
+              Gå tilbake
+            </button>
+            
+            <button
+              onClick={this.handleReset}
+              className="w-full px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition"
+            >
+              Gå til hovedsiden
+            </button>
+          </div>
+          
+          {process.env.NODE_ENV === 'development' && error && (
+            <div className="mt-6 p-4 bg-gray-100 rounded text-left overflow-auto max-h-60">
+              <p className="text-red-600 font-mono text-sm">{error.toString()}</p>
+              {errorInfo && (
+                <pre className="mt-2 text-xs text-gray-700 whitespace-pre-wrap">
+                  {errorInfo.componentStack}
+                </pre>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Ellers, render barnekomponenter normalt
+    return children;
+  }
+}
+
+// FallbackErrorBoundary - En høyerordens komponent som tilbyr spesifikke fallback-grensesnitt
+export const withErrorBoundary = (Component, fallbackComponent) => {
+  return (props) => (
+    <ErrorBoundary fallback={fallbackComponent}>
+      <Component {...props} />
+    </ErrorBoundary>
+  );
+};
+
+// Ekstra ErrorBoundary for den enkelte komponenten som kan brukes direkte i JSX
+export const ComponentErrorBoundary = ({ children, fallback, componentName }) => {
+  const componentFallback = ({ error, errorId, reset }) => {
+    return (
+      <div className="p-4 border border-red-200 rounded-lg bg-red-50">
+        <p className="text-red-600 mb-2">
+          Feil i komponenten {componentName || ''}
+        </p>
+        <button
+          onClick={reset}
+          className="px-3 py-1 bg-red-100 text-red-600 rounded hover:bg-red-200 transition text-sm"
+        >
+          Prøv på nytt
+        </button>
+        {process.env.NODE_ENV === 'development' && (
+          <div className="mt-2 text-xs text-red-500">{error?.toString()}</div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <ErrorBoundary fallback={fallback || componentFallback}>
+      {children}
+    </ErrorBoundary>
+  );
+};
+
+export default ErrorBoundary;

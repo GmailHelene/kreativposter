@@ -1,0 +1,189 @@
+// src/utils/PerformanceMonitor.js
+import { useEffect, useState } from 'react';
+
+// Funksjon for å måle Web Vitals
+export const measureWebVitals = () => {
+  if (typeof window === 'undefined' || !('performance' in window)) {
+    return null;
+  }
+
+  const metrics = {};
+
+  // Måle FCP (First Contentful Paint)
+  const getFCP = () => {
+    return new Promise(resolve => {
+      // Bruk Performance Observer hvis støttet
+      if ('PerformanceObserver' in window) {
+        const observer = new PerformanceObserver(entryList => {
+          const entries = entryList.getEntries();
+          if (entries.length > 0) {
+            const fcp = entries[0];
+            metrics.fcp = {
+              value: fcp.startTime,
+              rating: rateMetric('fcp', fcp.startTime)
+            };
+            observer.disconnect();
+            resolve(metrics.fcp);
+          }
+        });
+        
+        observer.observe({ type: 'paint', buffered: true });
+      } else {
+        // Fallback for eldre nettlesere
+        setTimeout(() => {
+          const navTiming = performance.timing;
+          if (navTiming) {
+            const fcpTime = navTiming.domContentLoadedEventEnd - navTiming.navigationStart;
+            metrics.fcp = {
+              value: fcpTime,
+              rating: rateMetric('fcp', fcpTime)
+            };
+            resolve(metrics.fcp);
+          } else {
+            resolve(null);
+          }
+        }, 1000);
+      }
+    });
+  };
+
+  // Måle LCP (Largest Contentful Paint)
+  const getLCP = () => {
+    return new Promise(resolve => {
+      if ('PerformanceObserver' in window) {
+        let lcpValue = 0;
+        
+        const observer = new PerformanceObserver(entryList => {
+          const entries = entryList.getEntries();
+          const lastEntry = entries[entries.length - 1];
+          lcpValue = lastEntry.startTime;
+          
+          metrics.lcp = {
+            value: lcpValue,
+            rating: rateMetric('lcp', lcpValue)
+          };
+        });
+        
+        observer.observe({ type: 'largest-contentful-paint', buffered: true });
+        
+        // LCP kan oppdateres flere ganger, så vi setter en timeout for å rapportere final verdi
+        setTimeout(() => {
+          observer.disconnect();
+          resolve(metrics.lcp || null);
+        }, 5000); // 5 sekunder burde være nok
+      } else {
+        resolve(null);
+      }
+    });
+  };
+
+  // Måle CLS (Cumulative Layout Shift)
+  const getCLS = () => {
+    return new Promise(resolve => {
+      if ('PerformanceObserver' in window) {
+        let clsValue = 0;
+        
+        const observer = new PerformanceObserver(entryList => {
+          for (const entry of entryList.getEntries()) {
+            if (!entry.hadRecentInput) {
+              clsValue += entry.value;
+            }
+          }
+          
+          metrics.cls = {
+            value: clsValue,
+            rating: rateMetric('cls', clsValue)
+          };
+        });
+        
+        observer.observe({ type: 'layout-shift', buffered: true });
+        
+        // Rapporter CLS etter en stund
+        setTimeout(() => {
+          observer.disconnect();
+          resolve(metrics.cls || null);
+        }, 5000);
+      } else {
+        resolve(null);
+      }
+    });
+  };
+
+  // Måle FID (First Input Delay)
+  const getFID = () => {
+    return new Promise(resolve => {
+      if ('PerformanceObserver' in window) {
+        const observer = new PerformanceObserver(entryList => {
+          const entries = entryList.getEntries();
+          if (entries.length > 0) {
+            const firstInput = entries[0];
+            const fidValue = firstInput.processingStart - firstInput.startTime;
+            
+            metrics.fid = {
+              value: fidValue,
+              rating: rateMetric('fid', fidValue)
+            };
+            
+            observer.disconnect();
+            resolve(metrics.fid);
+          }
+        });
+        
+        observer.observe({ type: 'first-input', buffered: true });
+        
+        // Om ingen input er registrert innen 10 sekunder, gi opp
+        setTimeout(() => {
+          if (!metrics.fid) {
+            observer.disconnect();
+            resolve(null);
+          }
+        }, 10000);
+      } else {
+        resolve(null);
+      }
+    });
+  };
+
+  // Måle TTFB (Time to First Byte)
+  const getTTFB = () => {
+    return new Promise(resolve => {
+      if ('performance' in window) {
+        const navEntry = performance.getEntriesByType('navigation')[0];
+        if (navEntry) {
+          const ttfbValue = navEntry.responseStart;
+          metrics.ttfb = {
+            value: ttfbValue,
+            rating: rateMetric('ttfb', ttfbValue)
+          };
+          resolve(metrics.ttfb);
+        } else if (performance.timing) {
+          // Fallback for eldre nettlesere
+          const ttfbValue = performance.timing.responseStart - performance.timing.navigationStart;
+          metrics.ttfb = {
+            value: ttfbValue,
+            rating: rateMetric('ttfb', ttfbValue)
+          };
+          resolve(metrics.ttfb);
+        } else {
+          resolve(null);
+        }
+      } else {
+        resolve(null);
+      }
+    });
+  };
+
+  // Funksjon for å vurdere metrikker
+  const rateMetric = (metric, value) => {
+    // Terskelverdier basert på Web Vitals anbefalinger
+    const thresholds = {
+      fcp: { good: 1800, poor: 3000 },  // ms
+      lcp: { good: 2500, poor: 4000 },  // ms
+      cls: { good: 0.1, poor: 0.25 },   // unitless
+      fid: { good: 100, poor: 300 },    // ms
+      ttfb: { good: 800, poor: 1800 }   // ms
+    };
+    
+    if (!thresholds[metric]) return 'unknown';
+    
+    if (value <= thresh

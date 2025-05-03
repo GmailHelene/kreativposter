@@ -1,0 +1,800 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Link } from 'react-router-dom';
+import SocialMediaLogin from './SocialMediaLogin';
+import SocialMediaPublisher from './SocialMediaPublisher';
+import storageService from '../services/storageService';
+import windowAuthService from '../services/windowAuthService';
+import offlineService from '../services/offlineService';
+
+/**
+ * Dashboard - Hovedkomponent for KreativPoster dashbordet
+ * 
+ * Denne komponenten integrerer alle hovedfunksjonene i applikasjonen:
+ * - Innlogging på sosiale medier
+ * - Publisering av innhold
+ * - Plattformoversikt
+ * - Innholdsoversikt
+ */
+const Dashboard = () => {
+  // State
+  const [activeTab, setActiveTab] = useState('home');
+  const [connectedPlatforms, setConnectedPlatforms] = useState({});
+  const [platformWindows, setPlatformWindows] = useState({});
+  const [recentContent, setRecentContent] = useState([]);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  
+  // Refs
+  const platformContainersRef = useRef({});
+  const dashboardRef = useRef(null);
+  
+  // Initialiser
+  useEffect(() => {
+    const initDashboard = async () => {
+      try {
+        // Last innhold
+        await loadSavedContent();
+        
+        // Lytt til nettverksstatus
+        const handleOnline = () => setIsOnline(true);
+        const handleOffline = () => setIsOnline(false);
+        
+        window.addEventListener('online', handleOnline);
+        window.addEventListener('offline', handleOffline);
+        
+        // Lytt til fullskjermendringer
+        document.addEventListener('fullscreenchange', handleFullscreenChange);
+        
+        setIsLoading(false);
+        
+        return () => {
+          window.removeEventListener('online', handleOnline);
+          window.removeEventListener('offline', handleOffline);
+          document.removeEventListener('fullscreenchange', handleFullscreenChange);
+        };
+      } catch (error) {
+        console.error('Feil ved initialisering av dashboard:', error);
+        setIsLoading(false);
+      }
+    };
+    
+    initDashboard();
+  }, []);
+  
+  // Last innhold
+  const loadSavedContent = async () => {
+    try {
+      // Hent planlagte innlegg
+      const scheduledContent = await storageService.getScheduledContent();
+      
+      // Hent publisert innhold
+      const publishedContent = await storageService.getPublishedContent();
+      
+      // Kombiner og sorter etter dato (nyeste først)
+      const allContent = [...scheduledContent, ...publishedContent].sort((a, b) => {
+        const dateA = a.publishedAt || a.scheduledFor || a.createdAt;
+        const dateB = b.publishedAt || b.scheduledFor || b.createdAt;
+        return new Date(dateB) - new Date(dateA);
+      });
+      
+      setRecentContent(allContent);
+    } catch (error) {
+      console.error('Feil ved lasting av innhold:', error);
+    }
+  };
+  
+  // Håndter fullskjermendringer
+  const handleFullscreenChange = () => {
+    setIsFullscreen(!!document.fullscreenElement);
+  };
+  
+  // Åpne en plattform i en iframe
+  const openPlatformInFrame = (platform) => {
+    if (!connectedPlatforms[platform]?.isLoggedIn) {
+      showNotification(`Du må være logget inn på ${platform} først`, 'warning');
+      return;
+    }
+    
+    const container = platformContainersRef.current[platform];
+    if (container) {
+      // Opprett iframe
+      container.innerHTML = '';
+      const iframe = document.createElement('iframe');
+      
+      // Angi src basert på plattform
+      const platformUrls = {
+        facebook: 'https://www.facebook.com/',
+        instagram: 'https://www.instagram.com/',
+        tiktok: 'https://www.tiktok.com/',
+        youtube: 'https://www.youtube.com/studio',
+        snapchat: 'https://business.snapchat.com/'
+      };
+      
+      iframe.src = platformUrls[platform];
+      iframe.style.width = '100%';
+      iframe.style.height = '100%';
+      iframe.style.border = 'none';
+      
+      container.appendChild(iframe);
+      
+      // Oppdater aktiv fane
+      setActiveTab('platforms');
+    }
+  };
+  
+  // Åpne plattform i nytt vindu
+  const openPlatformInWindow = (platform) => {
+    if (!connectedPlatforms[platform]?.isLoggedIn) {
+      showNotification(`Du må være logget inn på ${platform} først`, 'warning');
+      return;
+    }
+    
+    // Platformurler
+    const platformUrls = {
+      facebook: 'https://www.facebook.com/',
+      instagram: 'https://www.instagram.com/',
+      tiktok: 'https://www.tiktok.com/',
+      youtube: 'https://www.youtube.com/studio',
+      snapchat: 'https://business.snapchat.com/'
+    };
+    
+    // Åpne vindu
+    const window = global.window.open(
+      platformUrls[platform],
+      `${platform}-window`,
+      'width=1200,height=800,resizable=yes,scrollbars=yes,status=yes'
+    );
+    
+    if (window) {
+      // Lagre vindusreferanse
+      setPlatformWindows(prev => ({
+        ...prev,
+        [platform]: window
+      }));
+    }
+  };
+  
+  // Toggle fullskjerm
+  const toggleFullscreen = () => {
+    if (!isFullscreen) {
+      if (dashboardRef.current.requestFullscreen) {
+        dashboardRef.current.requestFullscreen();
+      } else if (dashboardRef.current.mozRequestFullScreen) {
+        dashboardRef.current.mozRequestFullScreen();
+      } else if (dashboardRef.current.webkitRequestFullscreen) {
+        dashboardRef.current.webkitRequestFullscreen();
+      } else if (dashboardRef.current.msRequestFullscreen) {
+        dashboardRef.current.msRequestFullscreen();
+      }
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+      } else if (document.mozCancelFullScreen) {
+        document.mozCancelFullScreen();
+      } else if (document.webkitExitFullscreen) {
+        document.webkitExitFullscreen();
+      } else if (document.msExitFullscreen) {
+        document.msExitFullscreen();
+      }
+    }
+  };
+  
+  // Vis notifikasjon
+  const showNotification = (message, type = 'info') => {
+    console.log(`[${type.toUpperCase()}] ${message}`);
+    // Her kan du implementere et faktisk notifikasjonssystem
+  };
+  
+  // Håndter endring i innloggingsstatus
+  const handleLoginStateChange = (platforms) => {
+    setConnectedPlatforms(platforms);
+  };
+  
+  // Vis nylig innhold
+  const renderRecentContent = () => {
+    if (recentContent.length === 0) {
+      return (
+        <div className="text-center py-8">
+          <p className="text-gray-500">Ingen nylig publisert innhold</p>
+        </div>
+      );
+    }
+    
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {recentContent.map((content, index) => (
+          <div 
+            key={index}
+            className="border rounded-lg overflow-hidden shadow-md hover:shadow-lg transition-shadow duration-300"
+          >
+            {content.mediaType === 'image' && content.mediaUrl && (
+              <div className="h-48 bg-gray-100 overflow-hidden">
+                <img 
+                  src={content.mediaUrl} 
+                  alt="Innholdsbilde" 
+                  className="w-full h-full object-cover"
+                />
+              </div>
+            )}
+            
+            {content.mediaType === 'video' && content.mediaUrl && (
+              <div className="h-48 bg-gray-100 overflow-hidden">
+                <video 
+                  src={content.mediaUrl} 
+                  controls
+                  className="w-full h-full object-cover"
+                />
+              </div>
+            )}
+            
+            <div className="p-4">
+              <div className="flex justify-between items-start mb-2">
+                <h3 className="font-bold text-lg truncate">{content.caption?.split('\n')[0] || 'Uten tittel'}</h3>
+                <span className={`text-xs px-2 py-1 rounded-full ${
+                  content.status === 'published' ? 'bg-green-100 text-green-800' :
+                  content.status === 'scheduled' ? 'bg-blue-100 text-blue-800' :
+                  content.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
+                  'bg-gray-100 text-gray-800'
+                }`}>
+                  {content.status === 'published' ? 'Publisert' :
+                   content.status === 'scheduled' ? 'Planlagt' :
+                   content.status === 'pending' ? 'Venter' :
+                   'Utkast'}
+                </span>
+              </div>
+              
+              <p className="text-sm text-gray-600 mb-3 line-clamp-2">
+                {content.caption || 'Ingen beskrivelse'}
+              </p>
+              
+              <div className="flex justify-between items-center">
+                <div className="flex space-x-2">
+                  {content.platforms && content.platforms.map(platform => (
+                    <i 
+                      key={platform}
+                      className={`fab fa-${platform} text-lg`}
+                      style={{ 
+                        color: platform === 'facebook' ? '#1877F2' : 
+                              platform === 'instagram' ? '#C13584' : 
+                              platform === 'tiktok' ? '#000000' :
+                              platform === 'youtube' ? '#FF0000' :
+                              platform === 'snapchat' ? '#FFFC00' : '#888888'
+                      }}
+                    ></i>
+                  ))}
+                </div>
+                
+                <div className="text-xs text-gray-500">
+                  {new Date(content.publishedAt || content.scheduledFor || content.createdAt || Date.now()).toLocaleDateString('no-NO')}
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+  
+  // Vis dashboard stats
+  const renderDashboardStats = () => {
+    const connectedCount = Object.values(connectedPlatforms).filter(p => p?.isLoggedIn).length;
+    const scheduledCount = recentContent.filter(c => c.status === 'scheduled').length;
+    const totalPosts = recentContent.filter(c => c.status === 'published').length;
+    
+    const stats = [
+      { label: 'Tilkoblede plattformer', value: connectedCount, icon: 'link', color: 'bg-blue-500' },
+      { label: 'Planlagte innlegg', value: scheduledCount, icon: 'clock', color: 'bg-purple-500' },
+      { label: 'Totalt publisert', value: totalPosts, icon: 'check-circle', color: 'bg-green-500' }
+    ];
+    
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        {stats.map((stat, index) => (
+          <div key={index} className="border rounded-lg p-4 flex items-center">
+            <div className={`${stat.color} w-12 h-12 rounded-full flex items-center justify-center mr-4 text-white`}>
+              <i className={`fas fa-${stat.icon} text-lg`}></i>
+            </div>
+            <div>
+              <div className="text-2xl font-bold">{stat.value}</div>
+              <div className="text-gray-600 text-sm">{stat.label}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+  
+  // Vis plattformoversikt på dashboard
+  const renderPlatformOverview = () => {
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+        {['facebook', 'instagram', 'tiktok', 'youtube', 'snapchat'].map(platform => {
+          const isConnected = connectedPlatforms[platform]?.isLoggedIn;
+          return (
+            <div 
+              key={platform}
+              className={`border rounded-lg p-4 flex flex-col items-center justify-center cursor-pointer transition-all hover:shadow-md ${isConnected ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`}
+              onClick={() => isConnected ? openPlatformInFrame(platform) : setActiveTab('connect')}
+            >
+              <i 
+                className={`fab fa-${platform} text-3xl mb-2`}
+                style={{ 
+                  color: platform === 'facebook' ? '#1877F2' : 
+                        platform === 'instagram' ? '#C13584' : 
+                        platform === 'tiktok' ? '#000000' :
+                        platform === 'youtube' ? '#FF0000' :
+                        platform === 'snapchat' ? '#FFFC00' : '#888888'
+                }}
+              ></i>
+              <div className="font-medium">{platform.charAt(0).toUpperCase() + platform.slice(1)}</div>
+              <div className="text-xs mt-1">
+                {isConnected ? (
+                  <span className="text-green-600">Tilkoblet</span>
+                ) : (
+                  <span className="text-gray-500">Ikke tilkoblet</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+  
+  // Vis plattformrammer
+  const renderPlatformIframes = () => {
+    const platforms = ['facebook', 'instagram', 'tiktok', 'youtube', 'snapchat'];
+    
+    return (
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
+        {platforms.map(platform => {
+          const isLoggedIn = connectedPlatforms[platform]?.isLoggedIn;
+          
+          return (
+            <div 
+              key={platform}
+              className="border rounded-lg overflow-hidden shadow-md h-96"
+            >
+              <div className="bg-gray-50 p-2 flex justify-between items-center border-b">
+                <div className="flex items-center">
+                  <i className={`fab fa-${platform} mr-2`} style={{ 
+                    color: platform === 'facebook' ? '#1877F2' : 
+                          platform === 'instagram' ? '#C13584' : 
+                          platform === 'tiktok' ? '#000000' :
+                          platform === 'youtube' ? '#FF0000' :
+                          platform === 'snapchat' ? '#FFFC00' : '#888888'
+                  }}></i>
+                  <span className="font-medium">{platform.charAt(0).toUpperCase() + platform.slice(1)}</span>
+                </div>
+                <div className="flex space-x-2">
+                  <button
+                    className="text-gray-400 hover:text-gray-600 p-1"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openPlatformInWindow(platform);
+                    }}
+                    title="Åpne i nytt vindu"
+                  >
+                    <i className="fas fa-external-link-alt"></i>
+                  </button>
+                  <button
+                    className="text-gray-400 hover:text-gray-600 p-1"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openPlatformInFrame(platform);
+                    }}
+                    title="Last på nytt"
+                  >
+                    <i className="fas fa-sync-alt"></i>
+                  </button>
+                </div>
+              </div>
+              <div 
+                className="bg-white h-full flex items-center justify-center" 
+                ref={el => platformContainersRef.current[platform] = el}
+              >
+                {!isLoggedIn && (
+                  <div className="text-center p-4">
+                    <p className="text-gray-500 mb-2">Du er ikke tilkoblet {platform}</p>
+                    <button
+                      className="px-3 py-1 bg-blue-500 text-white rounded-lg text-sm"
+                      onClick={() => setActiveTab('connect')}
+                    >
+                      Koble til nå
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+  
+  // Vis lasteskjerm
+  if (isLoading) {
+    return (
+      <div className="flex justify-center items-center min-h-screen bg-gray-100">
+        <div className="text-center">
+          <div className="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-600">Laster KreativPoster...</p>
+        </div>
+      </div>
+    );
+  }
+  
+  return (
+    <div 
+      className="min-h-screen bg-gray-100"
+      ref={dashboardRef}
+    >
+      {/* Vis offline-banner om nødvendig */}
+      {!isOnline && (
+        <div className="bg-yellow-100 border-b border-yellow-200 text-yellow-800 px-4 py-2 text-center font-medium">
+          Du er offline. Noen funksjoner vil være begrenset.
+        </div>
+      )}
+      
+      {/* Header */}
+      <header className="bg-white shadow-sm">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center py-4">
+            <div className="flex items-center">
+              <button 
+                className="md:hidden mr-4 text-gray-600 focus:outline-none"
+                onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+              >
+                <i className={`fas fa-${isMobileMenuOpen ? 'times' : 'bars'}`}></i>
+              </button>
+              
+              <h1 className="text-xl font-bold text-gray-800">KreativPoster</h1>
+            </div>
+            
+            <div className="flex items-center space-x-4">
+              <button
+                className="text-gray-600 hover:text-gray-800 focus:outline-none hidden md:block"
+                onClick={toggleFullscreen}
+                title={isFullscreen ? 'Avslutt fullskjerm' : 'Fullskjerm'}
+              >
+                <i className={`fas fa-${isFullscreen ? 'compress' : 'expand'} text-lg`}></i>
+              </button>
+              
+              <div className="relative">
+                <button
+                  className="flex items-center text-gray-600 hover:text-gray-800 focus:outline-none"
+                >
+                  <i className="fas fa-user-circle text-lg mr-2"></i>
+                  <span className="hidden md:inline">Bruker</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          
+          {/* Navigasjon - Desktop */}
+          <nav className="hidden md:flex space-x-6 py-2">
+            <button
+              className={`px-1 py-2 text-sm font-medium ${activeTab === 'home' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-600 hover:text-gray-800'}`}
+              onClick={() => setActiveTab('home')}
+            >
+              Dashbord
+            </button>
+            <button
+              className={`px-1 py-2 text-sm font-medium ${activeTab === 'connect' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-600 hover:text-gray-800'}`}
+              onClick={() => setActiveTab('connect')}
+            >
+              Koble til
+            </button>
+            <button
+              className={`px-1 py-2 text-sm font-medium ${activeTab === 'publish' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-600 hover:text-gray-800'}`}
+              onClick={() => setActiveTab('publish')}
+            >
+              Publiser
+            </button>
+            <button
+              className={`px-1 py-2 text-sm font-medium ${activeTab === 'platforms' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-600 hover:text-gray-800'}`}
+              onClick={() => setActiveTab('platforms')}
+            >
+              Plattformer
+            </button>
+            <button
+              className={`px-1 py-2 text-sm font-medium ${activeTab === 'content' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-600 hover:text-gray-800'}`}
+              onClick={() => setActiveTab('content')}
+            >
+              Innhold
+            </button>
+          </nav>
+        </div>
+      </header>
+      
+      {/* Mobilmeny */}
+      {isMobileMenuOpen && (
+        <div className="md:hidden bg-white shadow-lg">
+          <div className="px-4 py-2">
+            <nav className="flex flex-col space-y-2">
+              <button
+                className={`px-4 py-2 rounded-lg text-left ${activeTab === 'home' ? 'bg-blue-50 text-blue-600' : 'text-gray-600 hover:bg-gray-50'}`}
+                onClick={() => {
+                  setActiveTab('home');
+                  setIsMobileMenuOpen(false);
+                }}
+              >
+                <i className="fas fa-home mr-2"></i>
+                Dashbord
+              </button>
+              <button
+                className={`px-4 py-2 rounded-lg text-left ${activeTab === 'connect' ? 'bg-blue-50 text-blue-600' : 'text-gray-600 hover:bg-gray-50'}`}
+                onClick={() => {
+                  setActiveTab('connect');
+                  setIsMobileMenuOpen(false);
+                }}
+              >
+                <i className="fas fa-plug mr-2"></i>
+                Koble til
+              </button>
+              <button
+                className={`px-4 py-2 rounded-lg text-left ${activeTab === 'publish' ? 'bg-blue-50 text-blue-600' : 'text-gray-600 hover:bg-gray-50'}`}
+                onClick={() => {
+                  setActiveTab('publish');
+                  setIsMobileMenuOpen(false);
+                }}
+              >
+                <i className="fas fa-paper-plane mr-2"></i>
+                Publiser
+              </button>
+              <button
+                className={`px-4 py-2 rounded-lg text-left ${activeTab === 'platforms' ? 'bg-blue-50 text-blue-600' : 'text-gray-600 hover:bg-gray-50'}`}
+                onClick={() => {
+                  setActiveTab('platforms');
+                  setIsMobileMenuOpen(false);
+                }}
+              >
+                <i className="fas fa-desktop mr-2"></i>
+                Plattformer
+              </button>
+              <button
+                className={`px-4 py-2 rounded-lg text-left ${activeTab === 'content' ? 'bg-blue-50 text-blue-600' : 'text-gray-600 hover:bg-gray-50'}`}
+                onClick={() => {
+                  setActiveTab('content');
+                  setIsMobileMenuOpen(false);
+                }}
+              >
+                <i className="fas fa-images mr-2"></i>
+                Innhold
+              </button>
+              
+              <hr className="my-2" />
+              
+              <button
+                className="px-4 py-2 rounded-lg text-left text-gray-600 hover:bg-gray-50"
+                onClick={() => {
+                  toggleFullscreen();
+                  setIsMobileMenuOpen(false);
+                }}
+              >
+                <i className={`fas fa-${isFullscreen ? 'compress' : 'expand'} mr-2`}></i>
+                {isFullscreen ? 'Avslutt fullskjerm' : 'Fullskjerm'}
+              </button>
+            </nav>
+          </div>
+        </div>
+      )}
+      
+      {/* Hovedinnhold */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Hjemmefane / Dashboard */}
+        {activeTab === 'home' && (
+          <div>
+            <h2 className="text-2xl font-bold text-gray-800 mb-6">Dashbord</h2>
+            
+            {renderDashboardStats()}
+            
+            <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
+              <h3 className="text-lg font-bold text-gray-800 mb-4">Nylig publisert innhold</h3>
+              {renderRecentContent()}
+            </div>
+            
+            <div className="bg-white rounded-lg shadow-sm p-6">
+              <h3 className="text-lg font-bold text-gray-800 mb-4">Plattformoversikt</h3>
+              {renderPlatformOverview()}
+            </div>
+          </div>
+        )}
+        
+        {/* Koble til-fane */}
+        {activeTab === 'connect' && (
+          <SocialMediaLogin
+            onLoginStateChange={handleLoginStateChange}
+          />
+        )}
+        
+        {/* Publiser-fane */}
+        {activeTab === 'publish' && (
+          <SocialMediaPublisher
+            connectedPlatforms={connectedPlatforms}
+          />
+        )}
+        
+        {/* Plattformer-fane */}
+        {activeTab === 'platforms' && (
+          <div>
+            <h2 className="text-2xl font-bold text-gray-800 mb-6">Plattformoversikt</h2>
+            <p className="text-gray-600 mb-6">
+              Administrer dine tilkoblede sosiale medieplattformer direkte fra KreativPoster.
+            </p>
+            
+            {renderPlatformIframes()}
+          </div>
+        )}
+        
+        {/* Innholdsfane */}
+        {activeTab === 'content' && (
+          <div>
+            <h2 className="text-2xl font-bold text-gray-800 mb-6">Innholdsoversikt</h2>
+            
+            <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-bold text-gray-800">Publisert innhold</h3>
+                
+                <div className="flex space-x-2">
+                  <div className="relative">
+                    <input
+                      type="text"
+                      placeholder="Søk innhold..."
+                      className="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md p-2"
+                    />
+                    <i className="fas fa-search absolute right-3 top-2.5 text-gray-400"></i>
+                  </div>
+                  
+                  <select className="shadow-sm focus:ring-blue-500 focus:border-blue-500 block sm:text-sm border-gray-300 rounded-md p-2">
+                    <option>Alle plattformer</option>
+                    <option>Facebook</option>
+                    <option>Instagram</option>
+                    <option>TikTok</option>
+                    <option>YouTube</option>
+                    <option>Snapchat</option>
+                  </select>
+                </div>
+              </div>
+              
+              {renderRecentContent()}
+            </div>
+            
+            <div className="bg-white rounded-lg shadow-sm p-6">
+              <h3 className="text-lg font-bold text-gray-800 mb-4">Planlagte innlegg</h3>
+              
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Innhold
+                      </th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Plattformer
+                      </th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Planlagt
+                      </th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Status
+                      </th>
+                      <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Handlinger
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {recentContent.filter(content => content.status === 'scheduled').map((content, index) => (
+                      <tr key={index}>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="flex items-center">
+                            {content.mediaType === 'image' && content.mediaUrl && (
+                              <div className="flex-shrink-0 h-10 w-10 mr-3">
+                                <img 
+                                  src={content.mediaUrl} 
+                                  alt="" 
+                                  className="h-10 w-10 rounded object-cover"
+                                />
+                              </div>
+                            )}
+                            {content.mediaType === 'video' && content.mediaUrl && (
+                              <div className="flex-shrink-0 h-10 w-10 mr-3 bg-gray-200 rounded flex items-center justify-center">
+                                <i className="fas fa-video text-gray-500"></i>
+                              </div>
+                            )}
+                            <div className="truncate max-w-xs">
+                              {content.caption?.split('\n')[0] || 'Uten bildetekst'}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="flex space-x-1">
+                            {content.platforms && content.platforms.map(platform => (
+                              <i 
+                                key={platform}
+                                className={`fab fa-${platform}`}
+                                style={{ 
+                                  color: platform === 'facebook' ? '#1877F2' : 
+                                        platform === 'instagram' ? '#C13584' : 
+                                        platform === 'tiktok' ? '#000000' :
+                                        platform === 'youtube' ? '#FF0000' :
+                                        platform === 'snapchat' ? '#FFFC00' : '#888888'
+                                }}
+                              ></i>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          {new Date(content.scheduledFor || Date.now()).toLocaleString('no-NO')}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-yellow-100 text-yellow-800">
+                            Planlagt
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                          <button className="text-blue-600 hover:text-blue-900 mr-3">
+                            Rediger
+                          </button>
+                          <button className="text-red-600 hover:text-red-900">
+                            Avbryt
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    
+                    {recentContent.filter(content => content.status === 'scheduled').length === 0 && (
+                      <tr>
+                        <td colSpan="5" className="px-6 py-8 text-center text-gray-500">
+                          Ingen planlagte innlegg
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+      
+      {/* Footer */}
+      <footer className="bg-white border-t border-gray-200 mt-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+          <div className="md:flex md:items-center md:justify-between">
+            <div className="text-center md:text-left">
+              <p className="text-sm text-gray-500">
+                &copy; 2025 KreativPoster. Alle rettigheter forbeholdt.
+              </p>
+            </div>
+            <div className="flex justify-center md:justify-end mt-4 md:mt-0">
+              <Link
+                to="/test"
+                className="text-gray-400 hover:text-gray-500 mx-2"
+              >
+                <i className="fas fa-vial"></i>
+                <span className="ml-1 text-sm">Test Dashboard</span>
+              </Link>
+              <button
+                className="text-gray-400 hover:text-gray-500 mx-2"
+                onClick={() => {
+                  // Sync content
+                  loadSavedContent();
+                  showNotification('Innhold synkronisert', 'success');
+                }}
+              >
+                <i className="fas fa-sync"></i>
+                <span className="ml-1 text-sm">Synkroniser</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </footer>
+    </div>
+  );
+};
+
+export default Dashboard;

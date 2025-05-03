@@ -1,0 +1,168 @@
+C:\Users\helen\Desktop\kreativposter
+
+package.json       mangler disse
+
+
+kreativposter/
+├── public/
+│   ├── index.html             [Opprettet - Fra artifact]
+│   ├── manifest.json          [Opprettet - Fra artifact]
+│   └── favicon.ico            [Mangler - Kan legges til senere]
+├── src/
+│   ├── components/
+│   │   ├── Dashboard.jsx      [Fikset - Fra kreativ-poster-dashboard.txt]
+│   │   ├── ErrorBoundary.jsx  [Opprettet - Fra error-boundary.txt]
+│   │   ├── LazyLoad.jsx       [Opprettet - Fra lazy-loading.txt]
+│   │   ├── SocialMediaLogin.jsx [Opprettet - Fra artifact]
+│   │   ├── SocialMediaPublisher.jsx [Opprettet - Fra artifact]
+│   │   └── ContentSourceSelector.jsx [Beholdes - Fra content-source-selector.tsx]
+│   ├── services/
+│   │   ├── windowAuthService.js  [Fikset - Fra browser-auth-module.js]
+│   │   ├── storageService.js    [Opprettet - Fra local-storage-service.js]
+│   │   ├── offlineService.js    [Opprettet - Fra offline-support.txt]
+│   │   └── aiContentGenerator.js [Beholdes - Fra ai-content-generator.js]
+│   ├── utils/
+│   │   ├── NetworkUtils.js      [Beholdes - Fra network-utils.txt]
+│   │   └── PerformanceMonitor.js [Fikset - Fra performance-monitoring.txt]
+│   ├── App.js                   [Opprettet - Fra artifact]
+│   ├── index.js                 [Opprettet - Fra artifact]
+│   ├── App.css                  [Opprettet - Fra artifact]
+│   ├── index.css                [Opprettet - Fra artifact]
+│   └── reportWebVitals.js       [Opprettet - Fra artifact]
+├── scripts/
+│   ├── build.sh                 [Beholdes - Fra build-script.sh]
+│   ├── cleanup.js               [Beholdes - Fra cleanup-script.js]
+│   └── image-optimization.js    [Beholdes - Fra image-optimization.js]
+├── .eslintrc.js                 [Beholdes - Fra eslint-config.js]
+├── .prettierrc                  [Opprettet - Fra artifact]
+├── tailwind.config.js           [Opprettet - Fra artifact]
+├──  package.json                 [Opprettet - Fra artifact]
+├── README.md                    [Opprettet - Fra artifact]
+└── .gitignore                   [Mangler - Må opprettes]
+
+
+---
+Filer som ikke er nødvendige
+Følgende filer er serverside-kode som ikke trengs for frontendapplikasjonen:
+
+analytics-service.txt - Serverside analytikktjeneste
+app.js.js - Node.js server-applikasjon
+env-file.sh - Miljøvariabler for server
+
+GitHub-oppsett og -instruksjoner
+Her er en trinnvis guide for å sette opp prosjektet på GitHub:
+Trinn 1: Organisere filene lokalt
+
+Opprett en ny mappe på datamaskinen din med navnet "kreativposter"
+Opprett undermappene public, src, src/components, src/services, src/utils og scripts
+Plasser alle filene i sine respektive mapper som vist i filstrukturen ovenfor
+
+Trinn 2: Opprette en .gitignore-fil
+Opprett en fil med navnet .gitignore i hovedmappen med følgende innhold:
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# testing
+/coverage
+
+# production
+/build
+/dist
+
+# misc
+.DS_Store
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE files
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+Trinn 3: Initialisere Git og opprette et GitHub-repository
+
+Åpne terminalen og naviger til prosjektmappen:
+cd path/to/kreativposter
+
+Initialiser et Git-repository:
+git init
+
+Legg til alle filene i Git:
+git add .
+
+Gjør den første commit:
+git commit -m "Første commit: KreativPoster sosialt medie-verktøy"
+
+Opprett et nytt repository på GitHub:
+
+Gå til https://github.com/new
+Gi det navnet "kreativposter"
+La andre innstillinger være standard
+Klikk "Create repository"
+
+
+Koble ditt lokale repository til GitHub og push koden:
+git remote add origin https://github.com/ditt-brukernavn/kreativposter.git
+git branch -M main
+git push -u origin main
+
+
+Trinn 4: Installere avhengigheter og teste applikasjonen
+
+Installer Node.js-avhengigheter:
+npm install
+
+Start utviklingsserveren:
+npm start
+
+Applikasjonen skal nå kjøre på http://localhost:3000
+
+Trinn 5: Bygge for produksjon
+Når du er klar til å bygge en produksjonsversjon av applikasjonen:
+
+Kjør bygg-skriptet:
+npm run build
+
+De optimaliserte filene vil bli lagret i build-mappen
+
+Konklusjon
+Du har nå alle filene du trenger for et fullstendig KreativPoster-prosjekt, organisert i en logisk mappestruktur. Dette oppsettet bruker moderne webteknologier som React, Tailwind CSS og IndexedDB for å skape en robust app for sosial media-håndtering.
+De viktigste funksjonene er:
+
+Vindusbasert autentisering mot sosiale medieplattformer
+AI-drevet innholdsgenerering
+Planlegging og publisering av innlegg
+Offline-funksjonalitet med automatisk synkronisering
+Responsivt og brukervennlig grensesnitt
+
+
+--
+Du har rett, den filen ser bedre ut! La meg bekrefte at .prettierrc.js filen du har delt er korrekt og er et bedre valg enn den jeg foreslo:
+Din .prettierrc.js fil inkluderer:
+
+Alle de grunnleggende konfigurasjonsalternativene (printWidth, tabWidth, osv.)
+Flere avanserte innstillinger som ikke var med i min versjon (rangeStart, rangeEnd, osv.)
+Formateringsregler for markdown-filer gjennom overrides
+Er i JS-format i stedet for JSON, som gir bedre fleksibilitet og mulighet for kommentarer
+
+Den er langt mer komplett enn den jeg foreslo og vil gi bedre formateringsresultater for alle filtyper i prosjektet. Jeg vil anbefale å bruke denne framfor den jeg foreslo.
+For å bruke den:
+
+Opprett en fil med navn .prettierrc.js (legg merke til filendelsen .js i stedet for kun .prettierrc)
+Lim inn innholdet du delte
+Lagre filen i roten av prosjektet
+
+Du kan da kjøre Prettier med:
+bashnpx prettier --write "src/**/*.{js,jsx,ts,tsx,json,css,scss,md}"
+Eller ved å bruke skriptet i package.json:
+bashnpm run format
+Dette vil sikre at all kode i prosjektet formateres konsistent etter de spesifiserte reglene.

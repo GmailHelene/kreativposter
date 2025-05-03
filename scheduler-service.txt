@@ -1,0 +1,883 @@
+// src/services/SchedulerService.js
+
+import { storageService } from './StorageService';
+
+/**
+ * SchedulerService
+ * Håndterer planlagt publisering og bakgrunnsjobber
+ */
+class SchedulerService {
+  constructor() {
+    this.isInitialized = false;
+    this.scheduledTasks = [];
+    this.checkInterval = 60000; // 1 minutt
+    this.checkIntervalId = null;
+    this.notificationPermission = false;
+    this.notificationOptions = {
+      icon: '/images/logo.png',
+      badge: '/images/badge.png',
+      vibrate: [100, 50, 100],
+      requireInteraction: true
+    };
+    this.workers = {};
+    
+    // Registrer event handlers
+    this.registerVisibilityHandler();
+  }
+  
+  /**
+   * Initialiser scheduler
+   * @returns {Promise<boolean>} Om initialiseringen var vellykket
+   */
+  async initialize() {
+    if (this.isInitialized) return true;
+    
+    try {
+      // Hent lagrede planlagte oppgaver
+      await this.loadScheduledTasks();
+      
+      // Be om tillatelse til å vise varsler
+      await this.requestNotificationPermission();
+      
+      // Initialiser service worker hvis støttet
+      await this.registerServiceWorker();
+      
+      // Start periodisk sjekk av oppgaver
+      this.startTaskChecker();
+      
+      this.isInitialized = true;
+      return true;
+    } catch (error) {
+      console.error('Feil ved initialisering av scheduler:', error);
+      return false;
+    }
+  }
+  
+  /**
+   * Laster planlagte oppgaver fra lagring
+   * @returns {Promise<void>}
+   */
+  async loadScheduledTasks() {
+    try {
+      // Hent planlagt innhold fra lagringen
+      const scheduledContent = await storageService.getScheduledContent();
+      
+      // Konverter hvert innholdselement til en planlagt oppgave
+      this.scheduledTasks = scheduledContent.map(content => ({
+        id: content.id,
+        type: 'publish',
+        scheduledFor: new Date(content.scheduledFor),
+        data: content,
+        executed: false
+      }));
+      
+      // Sjekk om det er noen oppgaver som skulle vært utført mens appen var lukket
+      this.checkMissedTasks();
+      
+      console.log(`Lastet ${this.scheduledTasks.length} planlagte oppgaver`);
+    } catch (error) {
+      console.error('Feil ved lasting av planlagte oppgaver:', error);
+      this.scheduledTasks = [];
+    }
+  }
+  
+  /**
+   * Registrer en ny planlagt publisering
+   * @param {Object} contentToPublish - Innholdet som skal publiseres
+   * @param {Date|string} scheduledTime - Tidspunktet for publisering
+   * @param {Object} options - Tilleggsinnstillinger
+   * @returns {Promise<string>} ID for den planlagte oppgaven
+   */
+  async schedulePublish(contentToPublish, scheduledTime, options = {}) {
+    // Generer en unik ID for oppgaven
+    const taskId = `task_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+    
+    // Forbered innholdet for publisering
+    const content = { ...contentToPublish };
+    
+    // Forsikre oss om at innholdet har en ID
+    if (!content.id) {
+      content.id = `content_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+    }
+    
+    // Sett planleggingstidspunktet
+    content.scheduledFor = typeof scheduledTime === 'string' 
+      ? scheduledTime 
+      : scheduledTime.toISOString();
+    
+    // Lagre innholdet
+    await storageService.saveContentToPublish(content);
+    
+    // Opprett en planlagt oppgave
+    const task = {
+      id: taskId,
+      type: 'publish',
+      scheduledFor: new Date(content.scheduledFor),
+      data: content,
+      options,
+      executed: false
+    };
+    
+    // Legg til i listen over planlagte oppgaver
+    this.scheduledTasks.push(task);
+    
+    // Lagre oppgaven
+    await this.saveScheduledTasks();
+    
+    // Planlegg en påminnelse eller varsling i nettleseren
+    this.scheduleReminder(task);
+    
+    return taskId;
+  }
+  
+  /**
+   * Lagre planlagte oppgaver
+   * @returns {Promise<boolean>} Om lagringen var vellykket
+   */
+  async saveScheduledTasks() {
+    try {
+      // Vi trenger ikke å lagre hele oppgaveobjektet siden innholdet allerede er lagret
+      // Men vi kunne lagre metadataene hvis vi trenger det for fremtidige forbedringer
+      const taskMeta = this.scheduledTasks.map(task => ({
+        id: task.id,
+        contentId: task.data.id,
+        type: task.type,
+        scheduledFor: task.scheduledFor,
+        executed: task.executed
+      }));
+      
+      // Lagre metadataene i localStorage
+      localStorage.setItem('scheduledTasksMeta', JSON.stringify(taskMeta));
+      
+      return true;
+    } catch (error) {
+      console.error('Feil ved lagring av planlagte oppgaver:', error);
+      return false;
+    }
+  }
+  
+  /**
+   * Fjern en planlagt oppgave
+   * @param {string} taskId - ID for oppgaven
+   * @returns {Promise<boolean>} Om fjerningen var vellykket
+   */
+  async removeScheduledTask(taskId) {
+    const taskIndex = this.scheduledTasks.findIndex(task => task.id === taskId);
+    
+    if (taskIndex === -1) {
+      return false; // Oppgaven ble ikke funnet
+    }
+    
+    // Fjern fra listen
+    const [removedTask] = this.scheduledTasks.splice(taskIndex, 1);
+    
+    // Lagre oppdatert liste
+    await this.saveScheduledTasks();
+    
+    // Hvis oppgaven hadde tilknyttet innhold, oppdater innholdet
+    if (removedTask.data && removedTask.data.id) {
+      const content = await storageService.getFromIndexedDB('content', removedTask.data.id);
+      
+      if (content) {
+        // Fjern planleggingsinformasjonen
+        delete content.scheduledFor;
+        
+        // Lagre oppdatert innhold
+        await storageService.saveContentToPublish(content);
+      }
+    }
+    
+    return true;
+  }
+  
+  /**
+   * Start periodisk sjekk av planlagte oppgaver
+   */
+  startTaskChecker() {
+    if (this.checkIntervalId) {
+      clearInterval(this.checkIntervalId);
+    }
+    
+    // Sjekk umiddelbart
+    this.checkScheduledTasks();
+    
+    // Sett opp periodisk sjekk
+    this.checkIntervalId = setInterval(() => {
+      this.checkScheduledTasks();
+    }, this.checkInterval);
+    
+    console.log('Startet periodisk sjekk av planlagte oppgaver');
+  }
+  
+  /**
+   * Stopp periodisk sjekk
+   */
+  stopTaskChecker() {
+    if (this.checkIntervalId) {
+      clearInterval(this.checkIntervalId);
+      this.checkIntervalId = null;
+      console.log('Stoppet periodisk sjekk av planlagte oppgaver');
+    }
+  }
+  
+  /**
+   * Sjekk planlagte oppgaver for utførelse
+   */
+  async checkScheduledTasks() {
+    const now = new Date();
+    let tasksUpdated = false;
+    
+    for (const task of this.scheduledTasks) {
+      // Sjekk om oppgaven allerede er utført
+      if (task.executed) continue;
+      
+      // Sjekk om tidspunktet er nådd
+      if (task.scheduledFor <= now) {
+        try {
+          // Utfør oppgaven
+          await this.executeTask(task);
+          
+          // Merk som utført
+          task.executed = true;
+          tasksUpdated = true;
+          
+          console.log(`Utførte planlagt oppgave: ${task.id}`);
+        } catch (error) {
+          console.error(`Feil ved utførelse av oppgave ${task.id}:`, error);
+        }
+      }
+    }
+    
+    // Hvis noen oppgaver ble oppdatert, lagre endringene
+    if (tasksUpdated) {
+      await this.saveScheduledTasks();
+    }
+  }
+  
+  /**
+   * Sjekk oppgaver som kan ha blitt oversett mens appen var lukket
+   */
+  async checkMissedTasks() {
+    const now = new Date();
+    let tasksUpdated = false;
+    
+    for (const task of this.scheduledTasks) {
+      // Sjekk om oppgaven allerede er utført
+      if (task.executed) continue;
+      
+      // Sjekk om tidspunktet er passert, men med en toleranse på 1 time
+      const taskTime = new Date(task.scheduledFor);
+      const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+      
+      if (taskTime < oneHourAgo) {
+        // Oppgaven ble oversett, utfør den nå
+        try {
+          await this.executeTask(task);
+          task.executed = true;
+          tasksUpdated = true;
+          
+          console.log(`Utførte oversett oppgave: ${task.id}`);
+          
+          // Vis et varsel om at en oversett oppgave ble utført
+          this.showNotification(
+            'Oversett planlagt publisering',
+            `Innholdet "${task.data.title || 'Uten tittel'}" ble publisert nå (planlagt for ${taskTime.toLocaleString()}).`
+          );
+        } catch (error) {
+          console.error(`Feil ved utførelse av oversett oppgave ${task.id}:`, error);
+        }
+      }
+    }
+    
+    // Hvis noen oppgaver ble oppdatert, lagre endringene
+    if (tasksUpdated) {
+      await this.saveScheduledTasks();
+    }
+  }
+  
+  /**
+   * Utfør en planlagt oppgave
+   * @param {Object} task - Oppgaveobjektet
+   * @returns {Promise<boolean>} Om utførelsen var vellykket
+   */
+  async executeTask(task) {
+    if (task.type === 'publish') {
+      // Hent det fulle innholdsobjektet (i tilfelle det har blitt oppdatert)
+      const content = await storageService.getFromIndexedDB('content', task.data.id);
+      
+      if (!content) {
+        throw new Error(`Kunne ikke finne innhold med ID ${task.data.id}`);
+      }
+      
+      // Sett publikasjonsdato
+      content.publishedAt = new Date().toISOString();
+      
+      // Fjern planleggingsinformasjonen
+      delete content.scheduledFor;
+      
+      // Oppdater innholdet
+      await storageService.saveContentToPublish(content);
+      
+      // TODO: Faktisk publisering til sosiale medier
+      // Dette ville i en faktisk implementasjon kommunisere med
+      // sosiale medieplattformer gjennom deres API-er
+      
+      // Vis et varsel om at innholdet er publisert
+      this.showNotification(
+        'Innhold publisert',
+        `Ditt planlagte innhold "${content.title || 'Uten tittel'}" er nå publisert.`
+      );
+      
+      return true;
+    }
+    
+    // Hvis vi støtter andre typer oppgaver i fremtiden, kan de håndteres her
+    
+    return false;
+  }
+  
+  /**
+   * Planlegg en påminnelse for en oppgave
+   * @param {Object} task - Oppgaveobjektet
+   */
+  scheduleReminder(task) {
+    // Beregn tid til påminnelsen (5 minutter før planlagt tid)
+    const reminderTime = new Date(task.scheduledFor);
+    reminderTime.setMinutes(reminderTime.getMinutes() - 5);
+    
+    const now = new Date();
+    const timeUntilReminder = reminderTime.getTime() - now.getTime();
+    
+    // Hvis tidspunktet allerede er passert, ikke vis påminnelse
+    if (timeUntilReminder <= 0) return;
+    
+    // Planlegg påminnelsen
+    setTimeout(() => {
+      // Sjekk om oppgaven fremdeles eksisterer og ikke er utført
+      const taskExists = this.scheduledTasks.find(t => t.id === task.id && !t.executed);
+      
+      if (taskExists) {
+        this.showNotification(
+          'Planlagt publisering snart',
+          `Ditt innhold "${task.data.title || 'Uten tittel'}" vil bli publisert om 5 minutter.`
+        );
+      }
+    }, timeUntilReminder);
+  }
+  
+  /**
+   * Vis et varsel i nettleseren
+   * @param {string} title - Tittel på varselet
+   * @param {string} body - Hovedtekst i varselet
+   * @param {Object} options - Tilleggsinnstillinger
+   */
+  showNotification(title, body, options = {}) {
+    if (!this.notificationPermission) return;
+    
+    // Kombiner med standardinnstillinger
+    const notificationOptions = {
+      ...this.notificationOptions,
+      ...options,
+      body
+    };
+    
+    // Vis varselet
+    try {
+      new Notification(title, notificationOptions);
+    } catch (error) {
+      console.error('Feil ved visning av varsel:', error);
+    }
+  }
+  
+  /**
+   * Be om tillatelse til å vise varsler
+   * @returns {Promise<boolean>} Om tillatelse ble gitt
+   */
+  async requestNotificationPermission() {
+    if (!('Notification' in window)) {
+      console.log('Varsler støttes ikke i denne nettleseren');
+      return false;
+    }
+    
+    if (Notification.permission === 'granted') {
+      this.notificationPermission = true;
+      return true;
+    }
+    
+    if (Notification.permission === 'denied') {
+      console.log('Tillatelse til varsler er allerede avslått');
+      return false;
+    }
+    
+    try {
+      const permission = await Notification.requestPermission();
+      this.notificationPermission = permission === 'granted';
+      return this.notificationPermission;
+    } catch (error) {
+      console.error('Feil ved forespørsel om varseltillatelse:', error);
+      return false;
+    }
+  }
+  
+  /**
+   * Registrer en service worker for bakgrunnsoppgaver
+   * @returns {Promise<boolean>} Om registreringen var vellykket
+   */
+  async registerServiceWorker() {
+    if (!('serviceWorker' in navigator)) {
+      console.log('Service Workers støttes ikke i denne nettleseren');
+      return false;
+    }
+    
+    try {
+      const registration = await navigator.serviceWorker.register('/service-worker.js');
+      console.log('Service Worker registrert:', registration);
+      
+      // Lytt på meldinger fra service worker
+      navigator.serviceWorker.addEventListener('message', this.handleServiceWorkerMessage.bind(this));
+      
+      return true;
+    } catch (error) {
+      console.error('Feil ved registrering av Service Worker:', error);
+      return false;
+    }
+  }
+  
+  /**
+   * Håndter meldinger fra service worker
+   * @param {MessageEvent} event - Meldingshendelsen
+   */
+  handleServiceWorkerMessage(event) {
+    const message = event.data;
+    
+    if (message.type === 'taskExecuted') {
+      // En oppgave ble utført i bakgrunnen
+      const { taskId, success, error } = message;
+      
+      console.log(`Oppgave ${taskId} utført i bakgrunnen:`, success ? 'Vellykket' : 'Feilet', error || '');
+      
+      // Oppdater oppgavestatus
+      const task = this.scheduledTasks.find(t => t.id === taskId);
+      if (task) {
+        task.executed = success;
+        this.saveScheduledTasks();
+      }
+    }
+  }
+  
+  /**
+   * Registrer en handler for synlighetsendringer (tab aktiv/inaktiv)
+   */
+  registerVisibilityHandler() {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        // Nettleservinduet ble aktivt igjen
+        console.log('App ble synlig igjen, sjekker for oversette oppgaver');
+        
+        // Sjekk planlagte oppgaver umiddelbart
+        this.checkScheduledTasks();
+        
+        // Restart den periodiske sjekken hvis den ble stoppet
+        if (!this.checkIntervalId) {
+          this.startTaskChecker();
+        }
+      } else {
+        // Nettleservinduet ble inaktivt
+        console.log('App ble skjult, registrerer tidspunkt');
+        
+        // Lagre tidspunktet for når appen ble skjult
+        localStorage.setItem('appHiddenAt', new Date().toISOString());
+        
+        // Vi kunne stoppe den periodiske sjekken for å spare ressurser når appen ikke er i bruk
+        // Men vi lar den kjøre for å sikre at oppgaver blir utført i tide, selv på bakgrunn
+        // Når vi implementerer service workers, kunne vi overføre ansvaret til dem
+      }
+    });
+  }
+  
+  /**
+   * Finn oppgave med ID
+   * @param {string} taskId - ID for oppgaven
+   * @returns {Object|null} Oppgaveobjektet eller null
+   */
+  getTaskById(taskId) {
+    return this.scheduledTasks.find(task => task.id === taskId) || null;
+  }
+  
+  /**
+   * Oppdater en planlagt oppgave
+   * @param {string} taskId - ID for oppgaven
+   * @param {Object} updates - Oppdateringer til oppgaven
+   * @returns {Promise<boolean>} Om oppdateringen var vellykket
+   */
+  async updateTask(taskId, updates) {
+    const taskIndex = this.scheduledTasks.findIndex(task => task.id === taskId);
+    
+    if (taskIndex === -1) {
+      return false; // Oppgaven ble ikke funnet
+    }
+    
+    // Opprett en kopi av oppgaven for oppdatering
+    const updatedTask = { ...this.scheduledTasks[taskIndex] };
+    
+    // Oppdater egenskaper
+    if (updates.scheduledFor) {
+      updatedTask.scheduledFor = new Date(updates.scheduledFor);
+      
+      // Oppdater innholdet også
+      if (updatedTask.data) {
+        updatedTask.data.scheduledFor = updates.scheduledFor;
+      }
+    }
+    
+    // Ytterligere oppdateringer som kan være aktuelle
+    if (updates.data) {
+      updatedTask.data = { ...updatedTask.data, ...updates.data };
+    }
+    
+    if (updates.options) {
+      updatedTask.options = { ...updatedTask.options, ...updates.options };
+    }
+    
+    // Oppdater oppgaven i listen
+    this.scheduledTasks[taskIndex] = updatedTask;
+    
+    // Lagre oppdatert liste
+    await this.saveScheduledTasks();
+    
+    // Hvis det er innholdsdata, oppdater det også
+    if (updatedTask.data && updatedTask.data.id) {
+      await storageService.saveContentToPublish(updatedTask.data);
+    }
+    
+    // Oppdater påminnelser
+    this.scheduleReminder(updatedTask);
+    
+    return true;
+  }
+  
+  /**
+   * Pause/unpause en planlagt oppgave
+   * @param {string} taskId - ID for oppgaven
+   * @param {boolean} paused - Om oppgaven skal være pauset
+   * @returns {Promise<boolean>} Om operasjonen var vellykket
+   */
+  async pauseTask(taskId, paused = true) {
+    const task = this.getTaskById(taskId);
+    
+    if (!task) {
+      return false;
+    }
+    
+    task.paused = paused;
+    await this.saveScheduledTasks();
+    
+    return true;
+  }
+  
+  /**
+   * Få alle planlagte oppgaver
+   * @param {Object} filters - Filtreringsalternativer
+   * @returns {Array} Filtrert liste over oppgaver
+   */
+  getScheduledTasks(filters = {}) {
+    let filteredTasks = [...this.scheduledTasks];
+    
+    // Filtrer etter type
+    if (filters.type) {
+      filteredTasks = filteredTasks.filter(task => task.type === filters.type);
+    }
+    
+    // Filtrer etter status (utført/ikke utført)
+    if (filters.executed !== undefined) {
+      filteredTasks = filteredTasks.filter(task => task.executed === filters.executed);
+    }
+    
+    // Filtrer etter tidspunkt
+    if (filters.from) {
+      const fromDate = new Date(filters.from);
+      filteredTasks = filteredTasks.filter(task => new Date(task.scheduledFor) >= fromDate);
+    }
+    
+    if (filters.to) {
+      const toDate = new Date(filters.to);
+      filteredTasks = filteredTasks.filter(task => new Date(task.scheduledFor) <= toDate);
+    }
+    
+    // Filtrer etter pause-status
+    if (filters.paused !== undefined) {
+      filteredTasks = filteredTasks.filter(task => task.paused === filters.paused);
+    }
+    
+    // Sorter etter tidspunkt
+    if (filters.sort === 'asc') {
+      filteredTasks.sort((a, b) => new Date(a.scheduledFor) - new Date(b.scheduledFor));
+    } else {
+      filteredTasks.sort((a, b) => new Date(b.scheduledFor) - new Date(a.scheduledFor));
+    }
+    
+    return filteredTasks;
+  }
+  
+  /**
+   * Beregn neste tidspunkt for publisering basert på gjentakelse
+   * @param {Date} baseTime - Utgangspunktstidspunkt
+   * @param {Object} recurrence - Gjentakelsesinnstillinger
+   * @returns {Date} Neste tidspunkt
+   */
+  calculateNextRunTime(baseTime, recurrence) {
+    const baseDate = new Date(baseTime);
+    let nextDate = new Date(baseDate);
+    
+    switch (recurrence.type) {
+      case 'daily':
+        nextDate.setDate(nextDate.getDate() + recurrence.interval || 1);
+        break;
+        
+      case 'weekly':
+        nextDate.setDate(nextDate.getDate() + (recurrence.interval || 1) * 7);
+        break;
+        
+      case 'monthly':
+        nextDate.setMonth(nextDate.getMonth() + (recurrence.interval || 1));
+        break;
+        
+      case 'weekdays':
+        // Finn neste ukedag (man-fre)
+        do {
+          nextDate.setDate(nextDate.getDate() + 1);
+        } while (nextDate.getDay() === 0 || nextDate.getDay() === 6); // 0 = søndag, 6 = lørdag
+        break;
+        
+      case 'custom':
+        // Egendefinert gjentakelse basert på spesifikke dager
+        if (recurrence.daysOfWeek && recurrence.daysOfWeek.length > 0) {
+          // Konverter dager til tall (0-6 der 0 er søndag)
+          const days = recurrence.daysOfWeek.map(day => {
+            const dayMap = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+            return dayMap[day] || parseInt(day);
+          });
+          
+          // Finn neste dag som matcher
+          let found = false;
+          let increment = 1;
+          
+          while (!found && increment < 14) { // Maksimalt 2 uker frem
+            nextDate.setDate(nextDate.getDate() + 1);
+            if (days.includes(nextDate.getDay())) {
+              found = true;
+            }
+            increment++;
+          }
+        }
+        break;
+        
+      default: // 'once' - ingen gjentakelse
+        return null;
+    }
+    
+    // Behold opprinnelig tidspunkt på dagen
+    nextDate.setHours(baseDate.getHours());
+    nextDate.setMinutes(baseDate.getMinutes());
+    nextDate.setSeconds(baseDate.getSeconds());
+    
+    return nextDate;
+  }
+  
+  /**
+   * Planlegg gjentakende publisering
+   * @param {Object} contentTemplate - Mal for innhold som skal publiseres
+   * @param {Date|string} startTime - Starttidspunkt for første publisering
+   * @param {Object} recurrence - Gjentakelsesinnstillinger
+   * @param {Object} options - Tilleggsinnstillinger
+   * @returns {Promise<string>} ID for den første planlagte oppgaven
+   */
+  async scheduleRecurringPublish(contentTemplate, startTime, recurrence, options = {}) {
+    // Planlegg første publisering
+    const firstTaskId = await this.schedulePublish(contentTemplate, startTime, {
+      ...options,
+      recurrence
+    });
+    
+    return firstTaskId;
+  }
+  
+  /**
+   * Håndter utførte oppgaver og planlegg gjentakende oppgaver på nytt
+   * @param {Object} task - Oppgaven som ble utført
+   */
+  async handleCompletedRecurringTask(task) {
+    if (!task.options || !task.options.recurrence) return;
+    
+    // Beregn neste tidspunkt
+    const nextTime = this.calculateNextRunTime(task.scheduledFor, task.options.recurrence);
+    
+    if (!nextTime) return; // Ingen gjentakelse eller sluttet
+    
+    // Opprett en kopi av innholdet for neste publisering
+    const nextContent = { ...task.data };
+    
+    // Generer ny ID for neste innhold
+    nextContent.id = `content_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+    
+    // Planlegg neste publisering
+    await this.schedulePublish(nextContent, nextTime, task.options);
+  }
+  
+  /**
+   * Opprett en offline-kø for oppgaver som skal utføres når appen er online igjen
+   * @returns {Object} Kontroller for offline-køen
+   */
+  createOfflineQueue() {
+    // Hent eksisterende kø fra localStorage
+    let queue = [];
+    try {
+      const savedQueue = localStorage.getItem('offlineTaskQueue');
+      if (savedQueue) {
+        queue = JSON.parse(savedQueue);
+      }
+    } catch (error) {
+      console.error('Feil ved lasting av offline-kø:', error);
+    }
+    
+    // Opprett kontrollobjekt
+    const queueController = {
+      addTask: (task) => {
+        queue.push({
+          ...task,
+          addedAt: new Date().toISOString()
+        });
+        this.saveOfflineQueue(queue);
+      },
+      
+      removeTask: (taskId) => {
+        queue = queue.filter(task => task.id !== taskId);
+        this.saveOfflineQueue(queue);
+      },
+      
+      getQueue: () => [...queue],
+      
+      processQueue: async () => {
+        if (queue.length === 0) return;
+        
+        console.log(`Behandler ${queue.length} oppgaver i offline-køen`);
+        
+        const completedTasks = [];
+        
+        for (const task of queue) {
+          try {
+            // Prøv å utføre oppgaven
+            await this.executeTask(task);
+            completedTasks.push(task.id);
+          } catch (error) {
+            console.error(`Feil ved utførelse av oppgave ${task.id} fra offline-køen:`, error);
+          }
+        }
+        
+        // Fjern utførte oppgaver fra køen
+        queue = queue.filter(task => !completedTasks.includes(task.id));
+        this.saveOfflineQueue(queue);
+      }
+    };
+    
+    // Registrer nettverkshåndterer for å behandle køen når appen er online
+    window.addEventListener('online', () => {
+      console.log('Nettverkstilkobling gjenopprettet, behandler offline-kø');
+      queueController.processQueue();
+    });
+    
+    return queueController;
+  }
+  
+  /**
+   * Lagre offline-kø i localStorage
+   * @param {Array} queue - Køen som skal lagres
+   */
+  saveOfflineQueue(queue) {
+    try {
+      localStorage.setItem('offlineTaskQueue', JSON.stringify(queue));
+    } catch (error) {
+      console.error('Feil ved lagring av offline-kø:', error);
+    }
+  }
+  
+  /**
+   * Sjekk om nettbrowsern er online
+   * @returns {boolean} Om nettleseren er online
+   */
+  isOnline() {
+    return navigator.onLine;
+  }
+  
+  /**
+   * Opprett en Web Worker for bakgrunnsbehandling
+   * @param {string} workerId - ID for workeren
+   * @param {Function} workerFunction - Funksjonen som skal kjøres i bakgrunnen
+   * @returns {Worker|null} Web Worker-objektet eller null
+   */
+  createWorker(workerId, workerFunction) {
+    if (!window.Worker) {
+      console.log('Web Workers støttes ikke i denne nettleseren');
+      return null;
+    }
+    
+    try {
+      // Konverter funksjonen til en streng
+      const workerCode = `
+        ${workerFunction.toString()};
+        self.onmessage = function(e) {
+          const result = (${workerFunction.name})(e.data);
+          self.postMessage(result);
+        }
+      `;
+      
+      // Opprett en Blob med koden
+      const blob = new Blob([workerCode], { type: 'application/javascript' });
+      
+      // Opprett en URL for Blob-en
+      const workerUrl = URL.createObjectURL(blob);
+      
+      // Opprett og returner workeren
+      const worker = new Worker(workerUrl);
+      
+      // Lagre referanse
+      this.workers[workerId] = worker;
+      
+      return worker;
+    } catch (error) {
+      console.error('Feil ved opprettelse av Web Worker:', error);
+      return null;
+    }
+  }
+  
+  /**
+   * Stopp og fjern en Web Worker
+   * @param {string} workerId - ID for workeren
+   */
+  terminateWorker(workerId) {
+    if (this.workers[workerId]) {
+      this.workers[workerId].terminate();
+      delete this.workers[workerId];
+    }
+  }
+  
+  /**
+   * Rydd opp og avslutt scheduler
+   */
+  cleanup() {
+    // Stopp periodisk sjekk
+    this.stopTaskChecker();
+    
+    // Terminer alle Web Workers
+    Object.keys(this.workers).forEach(this.terminateWorker.bind(this));
+    
+    // Lagre tilstand
+    this.saveScheduledTasks();
+    
+    console.log('Scheduler avsluttet');
+  }
+}
+
+// Eksporter en singleton-instans
+export const schedulerService = new SchedulerService();
+export default schedulerService;

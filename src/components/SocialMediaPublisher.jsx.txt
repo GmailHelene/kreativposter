@@ -1,0 +1,650 @@
+import React, { useState, useEffect, useRef } from 'react';
+import ContentSourceSelector from './ContentSourceSelector';
+import aiContentGenerator from '../services/aiContentGenerator';
+import storageService from '../services/storageService';
+import offlineService from '../services/offlineService';
+import windowAuthService from '../services/windowAuthService';
+
+/**
+ * SocialMediaPublisher - Komponent for å publisere innhold til sosiale medier
+ */
+const SocialMediaPublisher = ({ connectedPlatforms = {} }) => {
+  // State for innhold og publiseringskonfigurasjon
+  const [contentSource, setContentSource] = useState('ai');
+  const [contentType, setContentType] = useState('image');
+  const [caption, setCaption] = useState('');
+  const [hashtags, setHashtags] = useState('');
+  const [selectedPlatforms, setSelectedPlatforms] = useState([]);
+  const [mediaFile, setMediaFile] = useState(null);
+  const [mediaPreview, setMediaPreview] = useState(null);
+  const [isScheduled, setIsScheduled] = useState(false);
+  const [scheduleDate, setScheduleDate] = useState('');
+  const [scheduleTime, setScheduleTime] = useState('');
+  
+  // AI innholdsgenerering
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [aiTone, setAiTone] = useState('casual');
+  const [aiLength, setAiLength] = useState('medium');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generatedContent, setGeneratedContent] = useState(null);
+  
+  // Status
+  const [isPublishing, setIsPublishing] = useState(false);
+  const [errorMessage, setErrorMessage] = useState(null);
+  const [successMessage, setSuccessMessage] = useState(null);
+  const [isOffline, setIsOffline] = useState(!navigator.onLine);
+  
+  // Refs
+  const fileInputRef = useRef(null);
+  
+  // Sjekk nettverksstatus
+  useEffect(() => {
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+  
+  // Sjekk at minst én plattform er valgt når den endres
+  useEffect(() => {
+    // Auto-velg første tilkoblede plattform hvis ingen er valgt
+    if (selectedPlatforms.length === 0) {
+      const availablePlatforms = Object.keys(connectedPlatforms).filter(
+        platform => connectedPlatforms[platform]?.isLoggedIn
+      );
+      
+      if (availablePlatforms.length > 0) {
+        setSelectedPlatforms([availablePlatforms[0]]);
+      }
+    }
+  }, [connectedPlatforms, selectedPlatforms]);
+  
+  // Håndter mediefilopplasting
+  const handleFileChange = (event) => {
+    const file = event.target.files[0];
+    if (file) {
+      setMediaFile(file);
+      
+      // Vis forhåndsvisning
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setMediaPreview(e.target.result);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+  
+  // Håndter valg av plattformer
+  const handlePlatformToggle = (platform) => {
+    setSelectedPlatforms(prev => {
+      if (prev.includes(platform)) {
+        return prev.filter(p => p !== platform);
+      } else {
+        return [...prev, platform];
+      }
+    });
+  };
+  
+  // Generer innhold med AI
+  const generateContent = async () => {
+    if (!aiPrompt.trim()) {
+      setErrorMessage('Vennligst skriv en beskrivelse for AI-generering');
+      return;
+    }
+    
+    try {
+      setIsGenerating(true);
+      setErrorMessage(null);
+      
+      const platform = selectedPlatforms.length > 0 ? selectedPlatforms[0] : 'instagram';
+      
+      const generatedResult = await aiContentGenerator.generateContentForPlatform(
+        aiPrompt,
+        platform,
+        {
+          contentType: contentType === 'text' ? 'text' : 'mixed',
+          textOptions: {
+            tone: aiTone,
+            length: aiLength,
+            includeHashtags: true,
+            hashtagCount: 5
+          }
+        }
+      );
+      
+      setGeneratedContent(generatedResult);
+      
+      // Fyll inn feltene med generert innhold
+      if (generatedResult.text) {
+        // Skill mellom caption og hashtags
+        const parts = generatedResult.text.split('\n\n');
+        setCaption(parts[0]);
+        
+        if (parts.length > 1) {
+          // Fjern # tegn fra hashtags for å passe i vårt format
+          setHashtags(parts[1].replace(/#/g, '').replace(/\s+/g, ' '));
+        }
+      }
+      
+      setSuccessMessage('Innhold generert! Du kan nå redigere før publisering.');
+      
+    } catch (error) {
+      console.error('Feil ved generering av innhold:', error);
+      setErrorMessage(`Kunne ikke generere innhold: ${error.message}`);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+  
+  // Publiser innhold
+  const publishContent = async () => {
+    // Valider inndata
+    if (contentType !== 'text' && !mediaFile && !generatedContent?.image) {
+      setErrorMessage('Vennligst last opp en mediefil');
+      return;
+    }
+    
+    if (!caption.trim()) {
+      setErrorMessage('Vennligst skriv en bildetekst');
+      return;
+    }
+    
+    if (selectedPlatforms.length === 0) {
+      setErrorMessage('Vennligst velg minst én plattform');
+      return;
+    }
+    
+    // Valider planleggingsinformasjon hvis aktivert
+    if (isScheduled) {
+      if (!scheduleDate || !scheduleTime) {
+        setErrorMessage('Vennligst angi dato og tid for planlegging');
+        return;
+      }
+      
+      const scheduledDateTime = new Date(`${scheduleDate}T${scheduleTime}`);
+      if (scheduledDateTime <= new Date()) {
+        setErrorMessage('Planlagt tidspunkt må være i fremtiden');
+        return;
+      }
+    }
+    
+    try {
+      setIsPublishing(true);
+      setErrorMessage(null);
+      
+      // Forbered innholdsdata
+      const contentData = {
+        id: `content_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+        caption,
+        platforms: selectedPlatforms,
+        mediaType: contentType,
+        createdAt: new Date().toISOString()
+      };
+      
+      // Håndter forskjellige mediatyper
+      if (contentType === 'image' && mediaFile) {
+        contentData.mediaUrl = mediaPreview;
+        contentData.imageFilename = mediaFile.name;
+      } else if (contentType === 'video' && mediaFile) {
+        contentData.mediaUrl = mediaPreview;
+        contentData.videoFilename = mediaFile.name;
+      } else if (generatedContent?.image) {
+        contentData.mediaUrl = generatedContent.image.url;
+        contentData.imageFilename = 'ai-generated-image.jpg';
+      }
+      
+      // Håndter hashtags
+      if (hashtags.trim()) {
+        contentData.hashtags = hashtags
+          .split(/[\s,]+/)
+          .filter(tag => tag.trim())
+          .map(tag => tag.trim().replace(/^#/, ''));
+      }
+      
+      // Håndter planlegging
+      if (isScheduled) {
+        contentData.status = 'scheduled';
+        contentData.scheduledFor = new Date(`${scheduleDate}T${scheduleTime}`).toISOString();
+        
+        // Lagre til lokalt lager
+        await storageService.saveContentToPublish(contentData);
+        
+        setSuccessMessage(`Innlegg planlagt for publisering ${scheduleDate} ${scheduleTime}`);
+      } else {
+        // Håndter umiddelbar publisering
+        contentData.status = 'publishing';
+        
+        // Hvis offline, legg til kø
+        if (isOffline) {
+          await offlineService.addPendingAction({
+            type: 'post',
+            data: contentData,
+            timestamp: new Date().toISOString()
+          });
+          
+          contentData.status = 'pending';
+          await storageService.saveContentToPublish(contentData);
+          
+          setSuccessMessage('Innlegg lagt i kø for publisering når du er tilbake online');
+        } else {
+          // Simuler publisering for demo-formål
+          // I en faktisk app ville dette kallet APIs
+          setTimeout(async () => {
+            contentData.status = 'published';
+            contentData.publishedAt = new Date().toISOString();
+            
+            // Lagre det publiserte innholdet
+            await storageService.saveContentToPublish(contentData);
+            
+            setSuccessMessage(`Innlegg publisert til ${selectedPlatforms.join(', ')}!`);
+            setIsPublishing(false);
+          }, 2000);
+        }
+      }
+      
+      // Reset form etter vellykket sending
+      resetForm();
+      
+    } catch (error) {
+      console.error('Feil ved publisering:', error);
+      setErrorMessage(`Kunne ikke publisere innhold: ${error.message}`);
+      setIsPublishing(false);
+    }
+  };
+  
+  // Nullstill skjemaet
+  const resetForm = () => {
+    setCaption('');
+    setHashtags('');
+    setMediaFile(null);
+    setMediaPreview(null);
+    setIsScheduled(false);
+    setScheduleDate('');
+    setScheduleTime('');
+    setGeneratedContent(null);
+    setAiPrompt('');
+    
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+  
+  // Forhåndsvis innhold
+  const previewContent = () => {
+    if (!caption.trim() && (contentType !== 'text' && !mediaPreview)) {
+      setErrorMessage('Legg til tekst eller media for å forhåndsvise');
+      return;
+    }
+    
+    // Her kan du implementere en enkel forhåndsvisning eller åpne en modal
+    alert('Forhåndsvisning er ikke implementert i denne demoversjonen');
+  };
+  
+  return (
+    <div className="max-w-4xl mx-auto p-4">
+      <h2 className="text-2xl font-bold text-gray-800 mb-6">Publiser innhold</h2>
+      
+      {/* Error/Success meldinger */}
+      {errorMessage && (
+        <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6" role="alert">
+          <p>{errorMessage}</p>
+        </div>
+      )}
+      
+      {successMessage && (
+        <div className="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 mb-6" role="alert">
+          <p>{successMessage}</p>
+        </div>
+      )}
+      
+      {isOffline && (
+        <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 mb-6" role="alert">
+          <p>Du er offline. Innhold vil bli publisert når du er tilbake online.</p>
+        </div>
+      )}
+      
+      <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
+        {/* Innholdskilde velger */}
+        <ContentSourceSelector 
+          contentSource={contentSource} 
+          onContentSourceChange={setContentSource} 
+        />
+        
+        {/* AI generering (hvis AI-kilde er valgt) */}
+        {contentSource === 'ai' && (
+          <div className="mb-6">
+            <label htmlFor="aiPrompt" className="block text-sm font-medium text-gray-700 mb-2">
+              Beskriv innholdet du vil generere
+            </label>
+            <textarea
+              id="aiPrompt"
+              rows="3"
+              className="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md p-2"
+              placeholder="Beskriv innholdet du vil generere, f.eks. 'En inspirerende post om selvutvikling med naturbilder'"
+              value={aiPrompt}
+              onChange={(e) => setAiPrompt(e.target.value)}
+            ></textarea>
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Tone
+                </label>
+                <select
+                  className="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md p-2"
+                  value={aiTone}
+                  onChange={(e) => setAiTone(e.target.value)}
+                >
+                  <option value="casual">Uformell</option>
+                  <option value="formal">Formell</option>
+                  <option value="funny">Morsom</option>
+                  <option value="serious">Seriøs</option>
+                  <option value="inspirational">Inspirerende</option>
+                </select>
+              </div>
+            
+            {generatedContent && (
+              <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+                <h4 className="font-medium text-gray-700 mb-2">Generert innhold:</h4>
+                {generatedContent.image && (
+                  <div className="mb-2">
+                    <p className="text-sm text-gray-500 mb-1">Bilde:</p>
+                    <div className="h-40 w-full bg-gray-200 flex items-center justify-center">
+                      <p className="text-gray-500">AI-generert bilde (simulert)</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+        
+        {/* Innholdstypevelger */}
+        <div className="mb-6">
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Innholdstype
+          </label>
+          <div className="flex space-x-4">
+            <label className="flex items-center cursor-pointer">
+              <input
+                type="radio"
+                name="contentType"
+                value="image"
+                checked={contentType === 'image'}
+                onChange={() => setContentType('image')}
+                className="h-4 w-4 text-blue-600"
+              />
+              <span className="ml-2 text-gray-700">Bilde</span>
+            </label>
+            <label className="flex items-center cursor-pointer">
+              <input
+                type="radio"
+                name="contentType"
+                value="video"
+                checked={contentType === 'video'}
+                onChange={() => setContentType('video')}
+                className="h-4 w-4 text-blue-600"
+              />
+              <span className="ml-2 text-gray-700">Video</span>
+            </label>
+            <label className="flex items-center cursor-pointer">
+              <input
+                type="radio"
+                name="contentType"
+                value="text"
+                checked={contentType === 'text'}
+                onChange={() => setContentType('text')}
+                className="h-4 w-4 text-blue-600"
+              />
+              <span className="ml-2 text-gray-700">Kun tekst</span>
+            </label>
+          </div>
+        </div>
+        
+        {/* Medieopplasting (hvis ikke tekstinnhold) */}
+        {contentType !== 'text' && contentSource === 'custom' && (
+          <div className="mb-6">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Last opp {contentType === 'image' ? 'bilde' : 'video'}
+            </label>
+            <div 
+              className="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-md"
+              onClick={() => fileInputRef.current && fileInputRef.current.click()}
+            >
+              <div className="space-y-1 text-center">
+                {mediaPreview ? (
+                  <div className="max-h-48 overflow-hidden">
+                    {contentType === 'image' ? (
+                      <img 
+                        src={mediaPreview} 
+                        alt="Forhåndsvisning" 
+                        className="mx-auto max-h-48"
+                      />
+                    ) : (
+                      <video 
+                        src={mediaPreview} 
+                        controls
+                        className="mx-auto max-h-48"
+                      />
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <i className="fas fa-cloud-upload-alt text-3xl text-gray-400"></i>
+                    <div className="flex text-sm text-gray-600">
+                      <label
+                        htmlFor="file-upload"
+                        className="relative cursor-pointer bg-white rounded-md font-medium text-blue-600 hover:text-blue-500"
+                      >
+                        <span>Last opp en fil</span>
+                        <input
+                          id="file-upload"
+                          ref={fileInputRef}
+                          name="file-upload"
+                          type="file"
+                          className="sr-only"
+                          accept={contentType === 'image' ? 'image/*' : 'video/*'}
+                          onChange={handleFileChange}
+                        />
+                      </label>
+                      <p className="pl-1">eller dra og slipp</p>
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      {contentType === 'image' ? 'PNG, JPG, GIF opp til 10MB' : 'MP4, MOV opp til 100MB'}
+                    </p>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {/* Bildetekst */}
+        <div className="mb-6">
+          <label htmlFor="caption" className="block text-sm font-medium text-gray-700 mb-2">
+            Bildetekst
+          </label>
+          <textarea
+            id="caption"
+            rows="3"
+            className="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md p-2"
+            placeholder="Skriv bildeteksten her..."
+            value={caption}
+            onChange={(e) => setCaption(e.target.value)}
+          ></textarea>
+        </div>
+        
+        {/* Hashtags */}
+        <div className="mb-6">
+          <label htmlFor="hashtags" className="block text-sm font-medium text-gray-700 mb-2">
+            Hashtags
+          </label>
+          <input
+            type="text"
+            id="hashtags"
+            className="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md p-2"
+            placeholder="eks. nyhet markedsføring sosialmedier (uten #)"
+            value={hashtags}
+            onChange={(e) => setHashtags(e.target.value)}
+          />
+        </div>
+        
+        {/* Plattformvalg */}
+        <div className="mb-6">
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Velg plattformer
+          </label>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+            {['facebook', 'instagram', 'tiktok', 'youtube', 'snapchat'].map(platform => {
+              const isLoggedIn = connectedPlatforms[platform]?.isLoggedIn;
+              const isSelected = selectedPlatforms.includes(platform);
+              
+              return (
+                <label 
+                  key={platform}
+                  className={`flex items-center p-3 border rounded-lg cursor-pointer transition-colors ${
+                    isSelected ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-blue-300'
+                  } ${isLoggedIn ? '' : 'opacity-50'}`}
+                >
+                  <input
+                    type="checkbox"
+                    value={platform}
+                    disabled={!isLoggedIn}
+                    checked={isSelected}
+                    onChange={() => handlePlatformToggle(platform)}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  />
+                  <i 
+                    className={`fab fa-${platform} ml-2 mr-2`}
+                    style={{ 
+                      color: platform === 'facebook' ? '#1877F2' : 
+                            platform === 'instagram' ? '#C13584' : 
+                            platform === 'tiktok' ? '#000000' :
+                            platform === 'youtube' ? '#FF0000' :
+                            platform === 'snapchat' ? '#FFFC00' : '#888888'
+                    }}
+                  ></i>
+                  <span className="text-sm">{platform.charAt(0).toUpperCase() + platform.slice(1)}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+        
+        {/* Planlegging */}
+        <div className="mb-6">
+          <div className="flex items-center mb-2">
+            <input
+              type="checkbox"
+              id="schedule"
+              checked={isScheduled}
+              onChange={() => setIsScheduled(!isScheduled)}
+              className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+            />
+            <label htmlFor="schedule" className="ml-2 block text-sm font-medium text-gray-700">
+              Planlegg publisering
+            </label>
+          </div>
+          
+          {isScheduled && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3 pl-6">
+              <div>
+                <label htmlFor="date" className="block text-sm font-medium text-gray-700 mb-1">
+                  Dato
+                </label>
+                <input
+                  type="date"
+                  id="date"
+                  className="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md p-2"
+                  value={scheduleDate}
+                  onChange={(e) => setScheduleDate(e.target.value)}
+                  min={new Date().toISOString().split('T')[0]} // Dagens dato som minimum
+                />
+              </div>
+              <div>
+                <label htmlFor="time" className="block text-sm font-medium text-gray-700 mb-1">
+                  Tidspunkt
+                </label>
+                <input
+                  type="time"
+                  id="time"
+                  className="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md p-2"
+                  value={scheduleTime}
+                  onChange={(e) => setScheduleTime(e.target.value)}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+        
+        {/* Handlingsknapper */}
+        <div className="flex justify-end space-x-3">
+          <button
+            type="button"
+            className="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none"
+            onClick={previewContent}
+            disabled={isPublishing}
+          >
+            Forhåndsvis
+          </button>
+          <button
+            type="button"
+            className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none disabled:opacity-50"
+            onClick={publishContent}
+            disabled={isPublishing}
+          >
+            {isPublishing ? (
+              <>
+                <span className="inline-block animate-spin mr-2">↻</span>
+                {isScheduled ? 'Planlegger...' : 'Publiserer...'}
+              </>
+            ) : (
+              isScheduled ? 'Planlegg' : 'Publiser'
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default SocialMediaPublisher;
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Lengde
+                </label>
+                <select
+                  className="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md p-2"
+                  value={aiLength}
+                  onChange={(e) => setAiLength(e.target.value)}
+                >
+                  <option value="short">Kort</option>
+                  <option value="medium">Medium</option>
+                  <option value="long">Lang</option>
+                </select>
+              </div>
+              
+              <div className="flex items-end">
+                <button
+                  className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50"
+                  onClick={generateContent}
+                  disabled={isGenerating || !aiPrompt.trim()}
+                >
+                  {isGenerating ? (
+                    <>
+                      <span className="inline-block animate-spin mr-2">↻</span>
+                      Genererer...
+                    </>
+                  ) : (
+                    'Generer innhold'
+                  )}
+                </button>
+              </div>
+            </div>

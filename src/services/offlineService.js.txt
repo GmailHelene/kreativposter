@@ -1,0 +1,387 @@
+// src/services/offlineService.js
+
+/**
+ * OfflineService - Håndterer offline-funksjonalitet for KreativPoster
+ * 
+ * Denne tjenesten tilbyr:
+ * 1. Deteksjon av online/offline-status
+ * 2. Offline innholdsskapelse og køhåndtering
+ * 3. Synkronisering når brukeren kommer online igjen
+ * 4. Lokal lagring og caching av ressurser
+ */
+
+class OfflineService {
+  constructor() {
+    this.isOnline = navigator.onLine;
+    this.dbName = 'kreativposter-offline';
+    this.contentStore = 'offline-content';
+    this.pendingStore = 'pending-actions';
+    this.db = null;
+    this.isInitialized = false;
+    this.listeners = {
+      online: [],
+      offline: [],
+      statusChange: []
+    };
+    
+    // Initialiser databasen
+    this.initDatabase();
+    
+    // Legg til lyttere for online/offline-status
+    window.addEventListener('online', this.handleOnline.bind(this));
+    window.addEventListener('offline', this.handleOffline.bind(this));
+    
+    // Registrer sync manager hvis tilgjengelig
+    this.registerSyncManager();
+  }
+  
+  // Initialiser IndexedDB-databasen
+  async initDatabase() {
+    return new Promise((resolve, reject) => {
+      if (this.isInitialized) {
+        resolve(this.db);
+        return;
+      }
+      
+      const request = window.indexedDB.open(this.dbName, 1);
+      
+      request.onerror = (event) => {
+        console.error('Feil ved åpning av offline-database:', event.target.error);
+        reject(event.target.error);
+      };
+      
+      request.onsuccess = (event) => {
+        this.db = event.target.result;
+        this.isInitialized = true;
+        resolve(this.db);
+      };
+      
+      request.onupgradeneeded = (event) => {
+        const db = event.target.result;
+        
+        // Opprett objektlager for offline-innhold hvis det ikke eksisterer
+        if (!db.objectStoreNames.contains(this.contentStore)) {
+          const store = db.createObjectStore(this.contentStore, { keyPath: 'id' });
+          store.createIndex('timestamp', 'timestamp', { unique: false });
+          store.createIndex('type', 'type', { unique: false });
+        }
+        
+        // Opprett objektlager for ventende handlinger hvis det ikke eksisterer
+        if (!db.objectStoreNames.contains(this.pendingStore)) {
+          const store = db.createObjectStore(this.pendingStore, { keyPath: 'id' });
+          store.createIndex('timestamp', 'timestamp', { unique: false });
+          store.createIndex('action', 'action', { unique: false });
+        }
+      };
+    });
+  }
+  
+  // Håndter online-hendelse
+  handleOnline() {
+    const wasOffline = !this.isOnline;
+    this.isOnline = true;
+    
+    console.log('App er nå online');
+    
+    // Kall online-lyttere
+    this.listeners.online.forEach(callback => callback());
+    
+    // Hvis status endret, varsle statusendring-lyttere
+    if (wasOffline) {
+      this.listeners.statusChange.forEach(callback => callback(true));
+      
+      // Forsøk å synkronisere ventende handlinger
+      this.syncPendingActions();
+    }
+  }
+  
+  // Håndter offline-hendelse
+  handleOffline() {
+    const wasOnline = this.isOnline;
+    this.isOnline = false;
+    
+    console.log('App er nå offline');
+    
+    // Kall offline-lyttere
+    this.listeners.offline.forEach(callback => callback());
+    
+    // Hvis status endret, varsle statusendring-lyttere
+    if (wasOnline) {
+      this.listeners.statusChange.forEach(callback => callback(false));
+    }
+  }
+  
+  // Registrer en lytter for online/offline-hendelser
+  addEventListener(event, callback) {
+    if (this.listeners[event]) {
+      this.listeners[event].push(callback);
+    }
+    
+    return () => this.removeEventListener(event, callback);
+  }
+  
+  // Fjern en lytter
+  removeEventListener(event, callback) {
+    if (this.listeners[event]) {
+      this.listeners[event] = this.listeners[event].filter(cb => cb !== callback);
+    }
+  }
+  
+  // Registrer bakgrunnssynkroniseringshåndterer
+  async registerSyncManager() {
+    if ('serviceWorker' in navigator && 'SyncManager' in window) {
+      try {
+        const registration = await navigator.serviceWorker.ready;
+        
+        // Registrer en sync-hendelse
+        registration.sync.register('sync-pending-actions');
+        
+        console.log('Bakgrunnssynkronisering registrert');
+      } catch (error) {
+        console.error('Bakgrunnssynkroniseringsregistrering mislyktes:', error);
+      }
+    }
+  }
+  
+  // Sjekk om appen er online
+  isAppOnline() {
+    return this.isOnline;
+  }
+  
+  // Legg til innhold for offline-bruk
+  async addOfflineContent(content) {
+    await this.initDatabase();
+    
+    return new Promise((resolve, reject) => {
+      // Legg til tidsstempel
+      content.timestamp = new Date().toISOString();
+      
+      // Generer ID hvis ikke oppgitt
+      if (!content.id) {
+        content.id = 'offline_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+      }
+      
+      const transaction = this.db.transaction([this.contentStore], 'readwrite');
+      const store = transaction.objectStore(this.contentStore);
+      const request = store.add(content);
+      
+      request.onsuccess = () => {
+        resolve(content);
+      };
+      
+      request.onerror = (event) => {
+        console.error('Feil ved tilføyelse av offline-innhold:', event.target.error);
+        reject(event.target.error);
+      };
+    });
+  }
+  
+  // Hent alt offline-innhold
+  async getOfflineContent() {
+    await this.initDatabase();
+    
+    return new Promise((resolve, reject) => {
+      const transaction = this.db.transaction([this.contentStore], 'readonly');
+      const store = transaction.objectStore(this.contentStore);
+      const request = store.getAll();
+      
+      request.onsuccess = () => {
+        resolve(request.result);
+      };
+      
+      request.onerror = (event) => {
+        console.error('Feil ved henting av offline-innhold:', event.target.error);
+        reject(event.target.error);
+      };
+    });
+  }
+  
+  // Hent offline-innhold etter type
+  async getOfflineContentByType(type) {
+    await this.initDatabase();
+    
+    return new Promise((resolve, reject) => {
+      const transaction = this.db.transaction([this.contentStore], 'readonly');
+      const store = transaction.objectStore(this.contentStore);
+      const index = store.index('type');
+      const request = index.getAll(type);
+      
+      request.onsuccess = () => {
+        resolve(request.result);
+      };
+      
+      request.onerror = (event) => {
+        console.error('Feil ved henting av offline-innhold etter type:', event.target.error);
+        reject(event.target.error);
+      };
+    });
+  }
+  
+  // Fjern offline-innhold
+  async removeOfflineContent(id) {
+    await this.initDatabase();
+    
+    return new Promise((resolve, reject) => {
+      const transaction = this.db.transaction([this.contentStore], 'readwrite');
+      const store = transaction.objectStore(this.contentStore);
+      const request = store.delete(id);
+      
+      request.onsuccess = () => {
+        resolve(true);
+      };
+      
+      request.onerror = (event) => {
+        console.error('Feil ved fjerning av offline-innhold:', event.target.error);
+        reject(event.target.error);
+      };
+    });
+  }
+  
+  // Legg til en ventende handling (for når offline)
+  async addPendingAction(action) {
+    await this.initDatabase();
+    
+    return new Promise((resolve, reject) => {
+      // Legg til tidsstempel
+      action.timestamp = new Date().toISOString();
+      
+      // Generer ID hvis ikke oppgitt
+      if (!action.id) {
+        action.id = 'action_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+      }
+      
+      const transaction = this.db.transaction([this.pendingStore], 'readwrite');
+      const store = transaction.objectStore(this.pendingStore);
+      const request = store.add(action);
+      
+      request.onsuccess = () => {
+        // Registrer sync hvis vi er online
+        if (this.isOnline && 'serviceWorker' in navigator && 'SyncManager' in window) {
+          navigator.serviceWorker.ready.then(registration => {
+            registration.sync.register('sync-pending-actions');
+          });
+        }
+        
+        resolve(action);
+      };
+      
+      request.onerror = (event) => {
+        console.error('Feil ved tilføyelse av ventende handling:', event.target.error);
+        reject(event.target.error);
+      };
+    });
+  }
+  
+  // Hent alle ventende handlinger
+  async getPendingActions() {
+    await this.initDatabase();
+    
+    return new Promise((resolve, reject) => {
+      const transaction = this.db.transaction([this.pendingStore], 'readonly');
+      const store = transaction.objectStore(this.pendingStore);
+      const request = store.getAll();
+      
+      request.onsuccess = () => {
+        resolve(request.result);
+      };
+      
+      request.onerror = (event) => {
+        console.error('Feil ved henting av ventende handlinger:', event.target.error);
+        reject(event.target.error);
+      };
+    });
+  }
+  
+  // Fjern en ventende handling
+  async removePendingAction(id) {
+    await this.initDatabase();
+    
+    return new Promise((resolve, reject) => {
+      const transaction = this.db.transaction([this.pendingStore], 'readwrite');
+      const store = transaction.objectStore(this.pendingStore);
+      const request = store.delete(id);
+      
+      request.onsuccess = () => {
+        resolve(true);
+      };
+      
+      request.onerror = (event) => {
+        console.error('Feil ved fjerning av ventende handling:', event.target.error);
+        reject(event.target.error);
+      };
+    });
+  }
+  
+  // Synkroniser ventende handlinger når du kommer online igjen
+  async syncPendingActions() {
+    if (!this.isOnline) {
+      console.log('Kan ikke synkronisere ventende handlinger mens offline');
+      return;
+    }
+    
+    console.log('Synkroniserer ventende handlinger...');
+    
+    try {
+      const pendingActions = await this.getPendingActions();
+      
+      if (pendingActions.length === 0) {
+        console.log('Ingen ventende handlinger å synkronisere');
+        return;
+      }
+      
+      console.log(`Fant ${pendingActions.length} ventende handlinger å synkronisere`);
+      
+      // Sorter handlinger etter tidsstempel (eldste først)
+      pendingActions.sort((a, b) => {
+        return new Date(a.timestamp) - new Date(b.timestamp);
+      });
+      
+      // Behandle hver handling sekvensielt
+      for (const action of pendingActions) {
+        try {
+          await this.processPendingAction(action);
+          await this.removePendingAction(action.id);
+        } catch (error) {
+          console.error(`Feil ved behandling av handling ${action.id}:`, error);
+          
+          // Merk som mislykket hvis den har blitt forsøkt for mange ganger
+          if (action.retries >= 3) {
+            action.status = 'failed';
+            action.error = error.message;
+            
+            // Oppdater handlingen i lageret
+            const transaction = this.db.transaction([this.pendingStore], 'readwrite');
+            const store = transaction.objectStore(this.pendingStore);
+            store.put(action);
+          } else {
+            // Øk antall forsøk og prøv igjen senere
+            action.retries = (action.retries || 0) + 1;
+            
+            // Oppdater handlingen i lageret
+            const transaction = this.db.transaction([this.pendingStore], 'readwrite');
+            const store = transaction.objectStore(this.pendingStore);
+            store.put(action);
+          }
+        }
+      }
+      
+      console.log('Synkronisering fullført');
+      
+      // Varsle lyttere om at synkronisering er fullført
+      this.notifySyncComplete();
+      
+    } catch (error) {
+      console.error('Feil ved synkronisering av ventende handlinger:', error);
+    }
+  }
+  
+  // Behandle en enkelt ventende handling
+  async processPendingAction(action) {
+    console.log('Behandler handling:', action);
+    
+    switch (action.type) {
+      case 'post':
+        return this.processPostAction(action);
+        
+      case 'login':
+        return this.processLoginAction(action);

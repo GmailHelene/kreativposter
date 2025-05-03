@@ -1,0 +1,682 @@
+// src/services/storageService.js
+
+/**
+ * StorageService
+ * Håndterer lokal lagring av brukerdata via LocalStorage og IndexedDB
+ */
+class StorageService {
+  constructor() {
+    this.dbName = 'KreativPosterDB';
+    this.dbVersion = 1;
+    this.db = null;
+    
+    // Initialiser IndexedDB
+    this.initIndexedDB();
+    
+    // Definer lagringsgrenser
+    this.storageLimits = {
+      localStorage: 5 * 1024 * 1024, // 5MB
+      indexedDB: 50 * 1024 * 1024    // 50MB
+    };
+  }
+  
+  /**
+   * Initialiser IndexedDB
+   * @returns {Promise} Promise som løses når databasen er klar
+   */
+  async initIndexedDB() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+        console.warn('IndexedDB støttes ikke i denne nettleseren. Faller tilbake til LocalStorage.');
+        this.useIndexedDB = false;
+        resolve(false);
+        return;
+      }
+      
+      this.useIndexedDB = true;
+      
+      // Åpne database
+      const request = window.indexedDB.open(this.dbName, this.dbVersion);
+      
+      request.onerror = (event) => {
+        console.error('Feil ved åpning av IndexedDB:', event.target.error);
+        this.useIndexedDB = false;
+        reject(event.target.error);
+      };
+      
+      request.onsuccess = (event) => {
+        this.db = event.target.result;
+        console.log('IndexedDB åpnet vellykket');
+        resolve(true);
+      };
+      
+      request.onupgradeneeded = (event) => {
+        const db = event.target.result;
+        
+        // Opprett tabeller (object stores)
+        if (!db.objectStoreNames.contains('accounts')) {
+          db.createObjectStore('accounts', { keyPath: 'id' });
+        }
+        
+        if (!db.objectStoreNames.contains('content')) {
+          const contentStore = db.createObjectStore('content', { keyPath: 'id' });
+          contentStore.createIndex('publishedAt', 'publishedAt', { unique: false });
+          contentStore.createIndex('scheduledFor', 'scheduledFor', { unique: false });
+        }
+        
+        if (!db.objectStoreNames.contains('settings')) {
+          db.createObjectStore('settings', { keyPath: 'key' });
+        }
+        
+        if (!db.objectStoreNames.contains('media')) {
+          const mediaStore = db.createObjectStore('media', { keyPath: 'id' });
+          mediaStore.createIndex('type', 'type', { unique: false });
+        }
+      };
+    });
+  }
+  
+  /**
+   * Sjekk om lagringsstørrelsen er innenfor grensene
+   * @param {string} storageType - 'localStorage' eller 'indexedDB'
+   * @returns {Promise<boolean>} Om størrelsen er innenfor grensene
+   */
+  async checkStorageSize(storageType = 'localStorage') {
+    if (storageType === 'localStorage') {
+      try {
+        let size = 0;
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          const value = localStorage.getItem(key);
+          size += (key.length + value.length) * 2; // * 2 for UTF-16 encoding
+        }
+        
+        return size < this.storageLimits.localStorage;
+      } catch (error) {
+        console.error('Feil ved beregning av localStorage-størrelse:', error);
+        return true; // Anta at det er ok
+      }
+    } else if (storageType === 'indexedDB') {
+      // For IndexedDB er det vanskeligere å beregne størrelse
+      // I en faktisk implementasjon ville vi bruke navigator.storage API
+      // For demo-formål antar vi at det er tilstrekkelig plass
+      return true;
+    }
+    
+    return true;
+  }
+  
+  /**
+   * Lagre data i LocalStorage
+   * @param {string} key - Nøkkel
+   * @param {any} data - Data som skal lagres
+   * @returns {boolean} Om lagringen var vellykket
+   */
+  saveToLocalStorage(key, data) {
+    try {
+      const serializedData = JSON.stringify(data);
+      localStorage.setItem(key, serializedData);
+      return true;
+    } catch (error) {
+      console.error(`Feil ved lagring av ${key} i localStorage:`, error);
+      return false;
+    }
+  }
+  
+  /**
+   * Hente data fra LocalStorage
+   * @param {string} key - Nøkkel
+   * @returns {any} Lagret data eller null
+   */
+  getFromLocalStorage(key) {
+    try {
+      const serializedData = localStorage.getItem(key);
+      return serializedData ? JSON.parse(serializedData) : null;
+    } catch (error) {
+      console.error(`Feil ved henting av ${key} fra localStorage:`, error);
+      return null;
+    }
+  }
+  
+  /**
+   * Fjerne data fra LocalStorage
+   * @param {string} key - Nøkkel
+   * @returns {boolean} Om fjerningen var vellykket
+   */
+  removeFromLocalStorage(key) {
+    try {
+      localStorage.removeItem(key);
+      return true;
+    } catch (error) {
+      console.error(`Feil ved fjerning av ${key} fra localStorage:`, error);
+      return false;
+    }
+  }
+  
+  /**
+   * Lagre data i IndexedDB
+   * @param {string} storeName - Navn på tabellen
+   * @param {Object} data - Data som skal lagres
+   * @returns {Promise<boolean>} Om lagringen var vellykket
+   */
+  async saveToIndexedDB(storeName, data) {
+    if (!this.useIndexedDB || !this.db) {
+      return this.saveToLocalStorage(`${storeName}_${data.id || data.key}`, data);
+    }
+    
+    return new Promise((resolve, reject) => {
+      try {
+        const transaction = this.db.transaction([storeName], 'readwrite');
+        const store = transaction.objectStore(storeName);
+        const request = store.put(data);
+        
+        request.onsuccess = () => resolve(true);
+        request.onerror = (event) => {
+          console.error(`Feil ved lagring i IndexedDB (${storeName}):`, event.target.error);
+          // Prøv å falle tilbake til LocalStorage
+          const success = this.saveToLocalStorage(`${storeName}_${data.id || data.key}`, data);
+          resolve(success);
+        };
+      } catch (error) {
+        console.error(`Feil ved lagring i IndexedDB (${storeName}):`, error);
+        // Prøv å falle tilbake til LocalStorage
+        const success = this.saveToLocalStorage(`${storeName}_${data.id || data.key}`, data);
+        resolve(success);
+      }
+    });
+  }
+  
+  /**
+   * Hente data fra IndexedDB
+   * @param {string} storeName - Navn på tabellen
+   * @param {string|number} key - Nøkkel
+   * @returns {Promise<any>} Lagret data eller null
+   */
+  async getFromIndexedDB(storeName, key) {
+    if (!this.useIndexedDB || !this.db) {
+      return this.getFromLocalStorage(`${storeName}_${key}`);
+    }
+    
+    return new Promise((resolve) => {
+      try {
+        const transaction = this.db.transaction([storeName], 'readonly');
+        const store = transaction.objectStore(storeName);
+        const request = store.get(key);
+        
+        request.onsuccess = (event) => {
+          resolve(event.target.result || null);
+        };
+        
+        request.onerror = (event) => {
+          console.error(`Feil ved henting fra IndexedDB (${storeName}):`, event.target.error);
+          // Prøv å falle tilbake til LocalStorage
+          const data = this.getFromLocalStorage(`${storeName}_${key}`);
+          resolve(data);
+        };
+      } catch (error) {
+        console.error(`Feil ved henting fra IndexedDB (${storeName}):`, error);
+        // Prøv å falle tilbake til LocalStorage
+        const data = this.getFromLocalStorage(`${storeName}_${key}`);
+        resolve(data);
+      }
+    });
+  }
+  
+  /**
+   * Hente alle data fra en tabell i IndexedDB
+   * @param {string} storeName - Navn på tabellen
+   * @returns {Promise<Array>} Array med alle data
+   */
+  async getAllFromIndexedDB(storeName) {
+    if (!this.useIndexedDB || !this.db) {
+      // Prøv å simulere dette fra LocalStorage
+      const prefix = `${storeName}_`;
+      const result = [];
+      
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key.startsWith(prefix)) {
+          const item = this.getFromLocalStorage(key);
+          if (item) {
+            result.push(item);
+          }
+        }
+      }
+      
+      return result;
+    }
+    
+    return new Promise((resolve) => {
+      try {
+        const transaction = this.db.transaction([storeName], 'readonly');
+        const store = transaction.objectStore(storeName);
+        const request = store.getAll();
+        
+        request.onsuccess = (event) => {
+          resolve(event.target.result || []);
+        };
+        
+        request.onerror = (event) => {
+          console.error(`Feil ved henting av alle fra IndexedDB (${storeName}):`, event.target.error);
+          // Prøv å falle tilbake til LocalStorage
+          resolve([]);
+        };
+      } catch (error) {
+        console.error(`Feil ved henting av alle fra IndexedDB (${storeName}):`, error);
+        // Prøv å falle tilbake til LocalStorage
+        resolve([]);
+      }
+    });
+  }
+  
+  /**
+   * Søke etter data i IndexedDB basert på en indeks
+   * @param {string} storeName - Navn på tabellen
+   * @param {string} indexName - Navn på indeksen
+   * @param {any} indexValue - Verdi å søke etter
+   * @returns {Promise<Array>} Array med matchende data
+   */
+  async queryIndexedDB(storeName, indexName, indexValue) {
+    if (!this.useIndexedDB || !this.db) {
+      // For lokalt lager må vi gjøre et fullt søk
+      const allItems = await this.getAllFromIndexedDB(storeName);
+      return allItems.filter(item => item[indexName] === indexValue);
+    }
+    
+    return new Promise((resolve) => {
+      try {
+        const transaction = this.db.transaction([storeName], 'readonly');
+        const store = transaction.objectStore(storeName);
+        const index = store.index(indexName);
+        const request = index.getAll(indexValue);
+        
+        request.onsuccess = (event) => {
+          resolve(event.target.result || []);
+        };
+        
+        request.onerror = (event) => {
+          console.error(`Feil ved spørring av IndexedDB (${storeName}/${indexName}):`, event.target.error);
+          resolve([]);
+        };
+      } catch (error) {
+        console.error(`Feil ved spørring av IndexedDB (${storeName}/${indexName}):`, error);
+        resolve([]);
+      }
+    });
+  }
+  
+  /**
+   * Fjerne data fra IndexedDB
+   * @param {string} storeName - Navn på tabellen
+   * @param {string|number} key - Nøkkel
+   * @returns {Promise<boolean>} Om fjerningen var vellykket
+   */
+  async removeFromIndexedDB(storeName, key) {
+    if (!this.useIndexedDB || !this.db) {
+      return this.removeFromLocalStorage(`${storeName}_${key}`);
+    }
+    
+    return new Promise((resolve) => {
+      try {
+        const transaction = this.db.transaction([storeName], 'readwrite');
+        const store = transaction.objectStore(storeName);
+        const request = store.delete(key);
+        
+        request.onsuccess = () => {
+          resolve(true);
+        };
+        
+        request.onerror = (event) => {
+          console.error(`Feil ved fjerning fra IndexedDB (${storeName}):`, event.target.error);
+          // Prøv å falle tilbake til LocalStorage
+          const success = this.removeFromLocalStorage(`${storeName}_${key}`);
+          resolve(success);
+        };
+      } catch (error) {
+        console.error(`Feil ved fjerning fra IndexedDB (${storeName}):`, error);
+        // Prøv å falle tilbake til LocalStorage
+        const success = this.removeFromLocalStorage(`${storeName}_${key}`);
+        resolve(success);
+      }
+    });
+  }
+  
+  /**
+   * Lagre tilkoblede kontoer
+   * @param {Array} accounts - Array med kontoobjekter
+   * @returns {Promise<boolean>} Om lagringen var vellykket
+   */
+  async saveAccounts(accounts) {
+    // Lagre en kopi av array for å unngå problemer med referanser
+    const accountsCopy = JSON.parse(JSON.stringify(accounts));
+    
+    // Lagre først i localStorage som backup
+    this.saveToLocalStorage('connectedAccounts', accountsCopy);
+    
+    // For hver konto, lagre i IndexedDB
+    if (this.useIndexedDB && this.db) {
+      for (const account of accountsCopy) {
+        await this.saveToIndexedDB('accounts', account);
+      }
+    }
+    
+    return true;
+  }
+  
+  /**
+   * Hente tilkoblede kontoer
+   * @returns {Promise<Array>} Array med kontoobjekter
+   */
+  async getAccounts() {
+    if (this.useIndexedDB && this.db) {
+      // Forsøk å hente fra IndexedDB
+      const accounts = await this.getAllFromIndexedDB('accounts');
+      if (accounts && accounts.length > 0) {
+        return accounts;
+      }
+    }
+    
+    // Faller tilbake til localStorage
+    return this.getFromLocalStorage('connectedAccounts') || [];
+  }
+  
+  /**
+   * Lagre publisert innhold
+   * @param {Array} content - Array med innholdsobjekter
+   * @returns {Promise<boolean>} Om lagringen var vellykket
+   */
+  async savePublishedContent(content) {
+    // Lagre en kopi av array for å unngå problemer med referanser
+    const contentCopy = JSON.parse(JSON.stringify(content));
+    
+    // Lagre først i localStorage som backup
+    this.saveToLocalStorage('publishedContent', contentCopy);
+    
+    // For hver innholdselement, lagre i IndexedDB
+    if (this.useIndexedDB && this.db) {
+      for (const item of contentCopy) {
+        await this.saveToIndexedDB('content', item);
+      }
+    }
+    
+    return true;
+  }
+  
+  /**
+   * Hente publisert innhold
+   * @returns {Promise<Array>} Array med innholdsobjekter
+   */
+  async getPublishedContent() {
+    if (this.useIndexedDB && this.db) {
+      // Forsøk å hente fra IndexedDB - innhold med publikasjonsdato
+      const content = await this.getAllFromIndexedDB('content');
+      if (content && content.length > 0) {
+        // Filtrer ut kun publisert innhold (har publishedAt)
+        return content.filter(item => item.publishedAt);
+      }
+    }
+    
+    // Faller tilbake til localStorage
+    return this.getFromLocalStorage('publishedContent') || [];
+  }
+  
+  /**
+   * Lagre planlagt innhold
+   * @param {Array} content - Array med innholdsobjekter
+   * @returns {Promise<boolean>} Om lagringen var vellykket
+   */
+  async saveScheduledContent(content) {
+    // Lagre en kopi av array for å unngå problemer med referanser
+    const contentCopy = JSON.parse(JSON.stringify(content));
+    
+    // Lagre først i localStorage som backup
+    this.saveToLocalStorage('scheduledContent', contentCopy);
+    
+    // For hver innholdselement, lagre i IndexedDB
+    if (this.useIndexedDB && this.db) {
+      for (const item of contentCopy) {
+        await this.saveToIndexedDB('content', item);
+      }
+    }
+    
+    return true;
+  }
+  
+  /**
+   * Hente planlagt innhold
+   * @returns {Promise<Array>} Array med innholdsobjekter
+   */
+  async getScheduledContent() {
+    if (this.useIndexedDB && this.db) {
+      // Forsøk å hente fra IndexedDB - innhold med planleggingsdato
+      const content = await this.getAllFromIndexedDB('content');
+      if (content && content.length > 0) {
+        // Filtrer ut kun planlagt innhold (har scheduledFor)
+        return content.filter(item => item.scheduledFor);
+      }
+    }
+    
+    // Faller tilbake til localStorage
+    return this.getFromLocalStorage('scheduledContent') || [];
+  }
+  
+  /**
+   * Lagre innhold som er klart til publisering
+   * @param {Object} content - Innholdsobjekt
+   * @returns {Promise<boolean>} Om lagringen var vellykket
+   */
+  async saveContentToPublish(content) {
+    // Legg til en id hvis det ikke allerede finnes
+    if (!content.id) {
+      content.id = `content_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+    }
+    
+    // Lagre i IndexedDB og faller tilbake til localStorage
+    const success = await this.saveToIndexedDB('content', content);
+    
+    // Hvis det er et planlagt innhold, oppdater også planlagt innhold array
+    if (content.scheduledFor) {
+      const scheduledContent = await this.getScheduledContent();
+      const index = scheduledContent.findIndex(item => item.id === content.id);
+      
+      if (index !== -1) {
+        scheduledContent[index] = content;
+      } else {
+        scheduledContent.push(content);
+      }
+      
+      await this.saveScheduledContent(scheduledContent);
+    }
+    
+    // Hvis det er et publisert innhold, oppdater også publisert innhold array
+    if (content.publishedAt) {
+      const publishedContent = await this.getPublishedContent();
+      const index = publishedContent.findIndex(item => item.id === content.id);
+      
+      if (index !== -1) {
+        publishedContent[index] = content;
+      } else {
+        publishedContent.push(content);
+      }
+      
+      await this.savePublishedContent(publishedContent);
+    }
+    
+    return success;
+  }
+  
+  /**
+   * Lagre medieressurs (bilde/video)
+   * @param {Object} media - Medieobjekt med dataURL
+   * @returns {Promise<string>} ID for den lagrede medieressursen
+   */
+  async saveMedia(media) {
+    if (!media.id) {
+      media.id = `media_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+    }
+    
+    // For store medieressurser, bruk alltid IndexedDB
+    const success = await this.saveToIndexedDB('media', media);
+    
+    if (!success) {
+      console.error('Kunne ikke lagre medieressurs');
+      return null;
+    }
+    
+    return media.id;
+  }
+  
+  /**
+   * Hente medieressurs
+   * @param {string} mediaId - ID for medieressursen
+   * @returns {Promise<Object>} Medieobjektet eller null
+   */
+  async getMedia(mediaId) {
+    return await this.getFromIndexedDB('media', mediaId);
+  }
+  
+  /**
+   * Lagre brukerinnstillinger
+   * @param {Object} settings - Innstillingsobjekt
+   * @returns {Promise<boolean>} Om lagringen var vellykket
+   */
+  async saveSettings(settings) {
+    const settingsCopy = { ...settings };
+    
+    // Lagre som enkeltinnstillinger for enklere oppdatering
+    for (const [key, value] of Object.entries(settingsCopy)) {
+      await this.saveToIndexedDB('settings', { key, value });
+      this.saveToLocalStorage(`setting_${key}`, value);
+    }
+    
+    return true;
+  }
+  
+  /**
+   * Hente brukerinnstillinger
+   * @returns {Promise<Object>} Innstillingsobjekt
+   */
+  async getSettings() {
+    const settings = {};
+    const settingsEntries = await this.getAllFromIndexedDB('settings');
+    
+    if (settingsEntries && settingsEntries.length > 0) {
+      // Konverter til objekt
+      for (const entry of settingsEntries) {
+        settings[entry.key] = entry.value;
+      }
+      return settings;
+    }
+    
+    // Faller tilbake til å sjekke hvert element i localStorage
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key.startsWith('setting_')) {
+        const settingKey = key.substring(8); // fjern 'setting_'
+        settings[settingKey] = this.getFromLocalStorage(key);
+      }
+    }
+    
+    return settings;
+  }
+  
+  /**
+   * Synkronisere lokale data med en skybasert tjeneste
+   * @param {Function} syncCallback - Callback-funksjon for synkronisering
+   * @returns {Promise<boolean>} Om synkroniseringen var vellykket
+   * 
+   * Dette er en placeholder-funksjon som kan implementeres senere
+   * for å synkronisere data med en ekstern tjeneste
+   */
+  async syncWithCloud(syncCallback) {
+    // Denne metoden ville koble til en ekstern tjeneste
+    // For nå returnerer vi bare true
+    if (typeof syncCallback === 'function') {
+      // Hent data som skal synkroniseres
+      const accounts = await this.getAccounts();
+      const publishedContent = await this.getPublishedContent();
+      const scheduledContent = await this.getScheduledContent();
+      const settings = await this.getSettings();
+      
+      // Kall callback med dataene
+      try {
+        await syncCallback({
+          accounts,
+          publishedContent,
+          scheduledContent,
+          settings,
+          timestamp: Date.now()
+        });
+        return true;
+      } catch (error) {
+        console.error('Feil ved synkronisering med skyen:', error);
+        return false;
+      }
+    }
+    
+    return false;
+  }
+  
+  /**
+   * Sjekk om en bestemt ressurs eksisterer i lagringen
+   * @param {string} storeName - Navn på tabellen
+   * @param {string|number} key - Nøkkel
+   * @returns {Promise<boolean>} Om ressursen eksisterer
+   */
+  async resourceExists(storeName, key) {
+    if (this.useIndexedDB && this.db) {
+      const item = await this.getFromIndexedDB(storeName, key);
+      return !!item;
+    }
+    
+    // Faller tilbake til localStorage
+    const item = this.getFromLocalStorage(`${storeName}_${key}`);
+    return !!item;
+  }
+  
+  /**
+   * Fjerne alle data (for utlogging)
+   * @param {boolean} keepSettings - Om innstillinger skal beholdes
+   * @returns {Promise<boolean>} Om operasjonen var vellykket
+   */
+  async clearAllData(keepSettings = false) {
+    // Fjern fra localStorage
+    if (keepSettings) {
+      // Behold innstillinger som starter med 'setting_'
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (!key.startsWith('setting_')) {
+          localStorage.removeItem(key);
+        }
+      }
+    } else {
+      localStorage.clear();
+    }
+    
+    // Fjern fra IndexedDB hvis tilgjengelig
+    if (this.useIndexedDB && this.db) {
+      const stores = ['accounts', 'content', 'media'];
+      if (!keepSettings) {
+        stores.push('settings');
+      }
+      
+      try {
+        for (const storeName of stores) {
+          const transaction = this.db.transaction([storeName], 'readwrite');
+          const store = transaction.objectStore(storeName);
+          store.clear();
+        }
+        return true;
+      } catch (error) {
+        console.error('Feil ved sletting av data fra IndexedDB:', error);
+        return false;
+      }
+    }
+    
+    return true;
+  }
+}
+
+// Eksporter en singleton-instans
+const storageService = new StorageService();
+export default storageService;

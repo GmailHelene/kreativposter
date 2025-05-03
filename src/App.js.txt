@@ -1,0 +1,85 @@
+import React, { useState, useEffect } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import Dashboard from './components/Dashboard';
+import TestDashboard from './components/TestDashboard';
+import ErrorBoundary from './components/ErrorBoundary';
+import './App.css';
+
+// Services
+import storageService from './services/storageService';
+import offlineService from './services/offlineService';
+
+function App() {
+  const [isInitialized, setIsInitialized] = useState(false);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [settings, setSettings] = useState({});
+
+  // Initialiser applikasjonen
+  useEffect(() => {
+    const initApp = async () => {
+      try {
+        // Last brukerinnstillinger
+        const userSettings = await storageService.getSettings();
+        setSettings(userSettings);
+
+        // Sett opp offline statuslytter
+        const offlineStatusListener = offlineService.addEventListener('statusChange', (online) => {
+          setIsOnline(online);
+          
+          if (online) {
+            // Hvis vi kommer online igjen, synkroniser eventuelle ventende handlinger
+            offlineService.syncPendingActions();
+          }
+        });
+
+        // Sett applikasjonen som initialisert
+        setIsInitialized(true);
+
+        // Cleanup
+        return () => {
+          offlineService.removeEventListener('statusChange', offlineStatusListener);
+        };
+      } catch (error) {
+        console.error('Feil ved initialisering av app:', error);
+        // Selv med feil, la appen fortsette
+        setIsInitialized(true);
+      }
+    };
+
+    initApp();
+  }, []);
+
+  // Vis lasteskjerm under initialisering
+  if (!isInitialized) {
+    return (
+      <div className="loading-screen">
+        <div className="loading-container">
+          <div className="loading-spinner"></div>
+          <p>Laster KreativPoster...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <Router>
+      <ErrorBoundary>
+        <div className="app-container">
+          {!isOnline && (
+            <div className="offline-banner">
+              Du er offline. Begrenset funksjonalitet er tilgjengelig.
+            </div>
+          )}
+          
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/test" element={<TestDashboard />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </div>
+      </ErrorBoundary>
+    </Router>
+  );
+}
+
+export default App;

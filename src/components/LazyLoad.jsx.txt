@@ -1,0 +1,104 @@
+import React, { Suspense, lazy } from 'react';
+
+// Fallback-komponent som vises mens komponenten lastes
+const DefaultLoading = () => (
+  <div className="lazy-loader-container">
+    <div className="lazy-loader-spinner">
+      <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+      <p className="mt-2 text-gray-600">Laster...</p>
+    </div>
+  </div>
+);
+
+// HOC for Lazy Loading
+export const withLazyLoading = (importFunc, LoadingComponent = DefaultLoading) => {
+  const LazyComponent = lazy(importFunc);
+  
+  return (props) => (
+    <Suspense fallback={<LoadingComponent />}>
+      <LazyComponent {...props} />
+    </Suspense>
+  );
+};
+
+// Bruk for å importere komponenter
+export const lazyImport = (path) => () => import(/* webpackChunkName: "[request]" */ `${path}`);
+
+// Lazy Routes konfigurasjon (for React Router)
+export const lazyRoutes = [
+  {
+    path: '/',
+    component: withLazyLoading(lazyImport('../pages/Home')),
+    exact: true,
+  },
+  {
+    path: '/dashboard',
+    component: withLazyLoading(lazyImport('../pages/Dashboard')),
+    exact: true,
+  },
+  {
+    path: '/settings',
+    component: withLazyLoading(lazyImport('../pages/Settings')),
+    exact: true,
+  },
+  {
+    path: '/test',
+    component: withLazyLoading(lazyImport('../components/TestDashboard')),
+    exact: true,
+  },
+];
+
+// IntersectionObserver-basert Lazy Loading for bilder og andre komponenter
+export const LazyLoadComponent = ({ children, height = '200px', width = '100%', threshold = 0.1 }) => {
+  const [isVisible, setIsVisible] = React.useState(false);
+  const placeholderRef = React.useRef(null);
+
+  React.useEffect(() => {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsVisible(true);
+          observer.disconnect();
+        }
+      },
+      { threshold }
+    );
+
+    if (placeholderRef.current) {
+      observer.observe(placeholderRef.current);
+    }
+
+    return () => {
+      if (observer) {
+        observer.disconnect();
+      }
+    };
+  }, [threshold]);
+
+  return isVisible ? (
+    children
+  ) : (
+    <div
+      ref={placeholderRef}
+      style={{ height, width, background: '#f0f0f0' }}
+      className="lazy-load-placeholder animate-pulse rounded"
+    />
+  );
+};
+
+// LazyImage komponent
+export const LazyImage = ({ src, alt, className, height = '200px', width = '100%', ...props }) => {
+  return (
+    <LazyLoadComponent height={height} width={width}>
+      <img src={src} alt={alt} className={className} {...props} />
+    </LazyLoadComponent>
+  );
+};
+
+export default {
+  withLazyLoading,
+  lazyImport,
+  lazyRoutes,
+  LazyLoadComponent,
+  LazyImage
+};

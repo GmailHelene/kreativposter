@@ -1,0 +1,214 @@
+import React, { useState, useEffect } from 'react';
+
+// Import tjenestehelper for vindusbasert autentisering
+import windowAuthService from '../services/windowAuthService';
+
+/**
+ * SocialMediaLogin - Komponent for å håndtere innlogging på sosiale medier
+ * 
+ * Denne komponenten gir et visuelt grensesnitt for å koble til forskjellige
+ * sosiale medieplattformer via popup-vinduer.
+ */
+const SocialMediaLogin = ({ onLoginStateChange }) => {
+  // State for tilkoblede plattformer
+  const [connectedPlatforms, setConnectedPlatforms] = useState({});
+  const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState(null);
+
+  // Sjekk innloggingsstatus ved oppstart
+  useEffect(() => {
+    const checkAllPlatforms = async () => {
+      setIsLoading(true);
+      try {
+        const platforms = ['facebook', 'instagram', 'tiktok', 'youtube', 'snapchat'];
+        const statusResults = {};
+        
+        for (const platform of platforms) {
+          const status = await windowAuthService.checkLoginStatus(platform);
+          statusResults[platform] = status;
+        }
+        
+        setConnectedPlatforms(statusResults);
+        
+        // Varsle parent om tilkoblingsstatuser
+        if (onLoginStateChange) {
+          onLoginStateChange(statusResults);
+        }
+      } catch (error) {
+        console.error('Feil ved sjekk av påloggingsstatuser:', error);
+        setErrorMessage('Kunne ikke hente påloggingsstatuser. Vennligst last inn siden på nytt.');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    
+    checkAllPlatforms();
+  }, [onLoginStateChange]);
+
+  // Håndter innlogging på plattform
+  const handleLogin = async (platform) => {
+    try {
+      setErrorMessage(null);
+      
+      const result = await windowAuthService.openLoginWindow(platform);
+      
+      if (result && result.success) {
+        // Oppdater tilkoblede plattformer
+        setConnectedPlatforms(prev => {
+          const updated = {
+            ...prev,
+            [platform]: {
+              isLoggedIn: true,
+              username: result.username || `user_${platform}`
+            }
+          };
+          
+          // Varsle parent om endringer
+          if (onLoginStateChange) {
+            onLoginStateChange(updated);
+          }
+          
+          return updated;
+        });
+        
+        showNotification(`Tilkoblet til ${platform}`, 'success');
+      } else {
+        showNotification(`Kunne ikke koble til ${platform}: ${result?.message || 'Ukjent feil'}`, 'error');
+      }
+    } catch (error) {
+      console.error(`Feil ved tilkobling til ${platform}:`, error);
+      setErrorMessage(`Kunne ikke koble til ${platform}. ${error.message}`);
+    }
+  };
+  
+  // Håndter utlogging
+  const handleLogout = (platform) => {
+    const result = windowAuthService.logout(platform);
+    
+    if (result.success) {
+      // Oppdater tilkoblede plattformer
+      setConnectedPlatforms(prev => {
+        const updated = {
+          ...prev,
+          [platform]: {
+            isLoggedIn: false,
+            username: null
+          }
+        };
+        
+        // Varsle parent om endringer
+        if (onLoginStateChange) {
+          onLoginStateChange(updated);
+        }
+        
+        return updated;
+      });
+      
+      showNotification(`Logget ut fra ${platform}`, 'info');
+    }
+  };
+  
+  // Enkel notifikasjon (kan erstattes med et mer avansert system)
+  const showNotification = (message, type = 'info') => {
+    console.log(`[${type.toUpperCase()}] ${message}`);
+    // Her kan du implementere et faktisk notifikasjonssystem
+  };
+
+  // Render plattformkort
+  const renderPlatformCards = () => {
+    const platforms = [
+      { id: 'facebook', name: 'Facebook', color: '#1877F2', icon: 'facebook' },
+      { id: 'instagram', name: 'Instagram', color: '#C13584', icon: 'instagram' },
+      { id: 'tiktok', name: 'TikTok', color: '#000000', icon: 'tiktok' },
+      { id: 'youtube', name: 'YouTube', color: '#FF0000', icon: 'youtube' },
+      { id: 'snapchat', name: 'Snapchat', color: '#FFFC00', icon: 'snapchat' }
+    ];
+    
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {platforms.map(platform => {
+          const isLoggedIn = connectedPlatforms[platform.id]?.isLoggedIn;
+          const username = connectedPlatforms[platform.id]?.username;
+          
+          return (
+            <div 
+              key={platform.id}
+              className="border rounded-lg overflow-hidden shadow-md hover:shadow-lg transition-shadow duration-300"
+            >
+              <div 
+                className="p-4 flex items-center"
+                style={{ backgroundColor: platform.color + '10' }}
+              >
+                <div 
+                  className="w-12 h-12 rounded-full flex items-center justify-center mr-4"
+                  style={{ backgroundColor: platform.color + '20' }}
+                >
+                  <i 
+                    className={`fab fa-${platform.icon} text-2xl`}
+                    style={{ color: platform.color }}
+                  ></i>
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg">{platform.name}</h3>
+                  <p className="text-sm text-gray-600">
+                    {isLoggedIn 
+                      ? `Logget inn som ${username || 'bruker'}`
+                      : 'Ikke tilkoblet'}
+                  </p>
+                </div>
+              </div>
+              
+              <div className="p-4 bg-gray-50 flex justify-between">
+                {isLoggedIn ? (
+                  <>
+                    <button
+                      className="px-3 py-1 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600 transition-colors"
+                      onClick={() => handleLogout(platform.id)}
+                    >
+                      Logg ut
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    className="w-full px-3 py-1 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600 transition-colors"
+                    onClick={() => handleLogin(platform.id)}
+                  >
+                    Koble til {platform.name}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // Vis lastindikator
+  if (isLoading) {
+    return (
+      <div className="flex justify-center items-center p-8">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {errorMessage && (
+        <div className="bg-red-100 border border-red-200 text-red-700 px-4 py-3 rounded mb-4" role="alert">
+          <p>{errorMessage}</p>
+        </div>
+      )}
+      
+      <h2 className="text-2xl font-bold text-gray-800 mb-6">Koble til plattformer</h2>
+      <p className="text-gray-600 mb-6">
+        Koble til dine sosiale medieplattformer for å kunne publisere innhold direkte fra KreativPoster.
+      </p>
+      
+      {renderPlatformCards()}
+    </div>
+  );
+};
+
+export default SocialMediaLogin;

@@ -1,0 +1,166 @@
+// src/utils/NetworkUtils.js
+
+/**
+ * NetworkUtils - Hjelpeverktøy for nettverkshåndtering
+ * 
+ * Dette modulet tilbyr funksjoner for robust nettverkshåndtering,
+ * inkludert retry-logikk, timeout-håndtering og feilhåndtering.
+ */
+
+// Nettverkstilstandslytter
+class NetworkStatusListener {
+  constructor() {
+    this.isOnline = navigator.onLine;
+    this.listeners = {
+      online: [],
+      offline: [],
+      statusChange: []
+    };
+    
+    // Registrer lyttere for nettverksstatus
+    window.addEventListener('online', this.handleOnline.bind(this));
+    window.addEventListener('offline', this.handleOffline.bind(this));
+  }
+  
+  handleOnline() {
+    const wasOffline = !this.isOnline;
+    this.isOnline = true;
+    
+    // Kall online-lyttere
+    this.listeners.online.forEach(callback => callback());
+    
+    // Hvis statusen faktisk endret seg, kall statusChange-lyttere
+    if (wasOffline) {
+      this.listeners.statusChange.forEach(callback => callback(true));
+    }
+  }
+  
+  handleOffline() {
+    const wasOnline = this.isOnline;
+    this.isOnline = false;
+    
+    // Kall offline-lyttere
+    this.listeners.offline.forEach(callback => callback());
+    
+    // Hvis statusen faktisk endret seg, kall statusChange-lyttere
+    if (wasOnline) {
+      this.listeners.statusChange.forEach(callback => callback(false));
+    }
+  }
+  
+  // Legg til en lytter for nettverkshendelser
+  addEventListener(event, callback) {
+    if (this.listeners[event]) {
+      this.listeners[event].push(callback);
+    }
+    
+    return () => this.removeEventListener(event, callback);
+  }
+  
+  // Fjern en lytter
+  removeEventListener(event, callback) {
+    if (this.listeners[event]) {
+      this.listeners[event] = this.listeners[event].filter(cb => cb !== callback);
+    }
+  }
+}
+
+// Singleton-instans av nettverkslytteren
+export const networkStatus = new NetworkStatusListener();
+
+/**
+ * Utfører en nettverksforespørsel med retry-logikk
+ * 
+ * @param {Function} requestFn - Funksjon som returnerer et Promise for forespørselen
+ * @param {Object} options - Konfigurasjonsalternativer
+ * @returns {Promise} Promise som løses med resultatet av forespørselen
+ */
+export const fetchWithRetry = async (requestFn, options = {}) => {
+  const {
+    retries = 3,
+    retryDelay = 1000,
+    timeout = 10000,
+    retryCondition = (error) => true,
+    onRetry = null
+  } = options;
+  
+  let lastError = null;
+  
+  // Forsøk forespørselen flere ganger
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      // Lag en Promise som avbrytes etter timeout
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => {
+          reject(new Error(`Forespørselen ble tidsavbrutt etter ${timeout}ms`));
+        }, timeout);
+      });
+      
+      // Race mellom faktisk forespørsel og timeout
+      const result = await Promise.race([
+        requestFn(),
+        timeoutPromise
+      ]);
+      
+      return result;
+    } catch (error) {
+      lastError = error;
+      
+      // Sjekk om vi bør prøve på nytt
+      if (attempt < retries && retryCondition(error)) {
+        // Vent litt før neste forsøk, med eksponentiell backoff
+        const delay = retryDelay * Math.pow(2, attempt);
+        
+        // Kall retry-callback hvis tilgjengelig
+        if (onRetry) {
+          onRetry(error, attempt, delay);
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      
+      // Hvis vi kommer hit, har vi brukt opp alle forsøkene
+      break;
+    }
+  }
+  
+  // Kast den siste feilen hvis vi brukte opp alle forsøkene
+  throw lastError;
+};
+
+/**
+ * Wrapper for fetch-API med retry- og timeout-støtte
+ * 
+ * @param {string} url - URL som skal hentes
+ * @param {Object} options - Fetch-alternativer + retry-alternativer
+ * @returns {Promise} Promise som løses med resultatet av fetch
+ */
+export const fetchWithOptions = (url, options = {}) => {
+  const {
+    retries, retryDelay, timeout, retryCondition, onRetry,
+    ...fetchOptions
+  } = options;
+  
+  const retryOptions = {
+    retries, retryDelay, timeout, retryCondition, onRetry
+  };
+  
+  return fetchWithRetry(() => fetch(url, fetchOptions), retryOptions);
+};
+
+/**
+ * Kontrollerer om en nettverksfeil bør føre til retry
+ * 
+ * @param {Error} error - Feilen som oppstod
+ * @returns {boolean} Hvorvidt feilen bør føre til retry
+ */
+export const defaultRetryCondition = (error) => {
+  // Nettverksfeil bør alltid føre til retry
+  if (error instanceof TypeError && error.message.includes('network')) {
+    return true;
+  }
+  
+  // 5xx-feil kan også være midlertidige og bør føre til retry
+  if (error.status >= 500 && error.status < 600) {
+    return true
